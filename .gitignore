@@ -25,6 +25,9 @@ jevkey.txt
 **/*.pem
 **/*.key
 **/*.p12
+.workbuddy/
+ai-agent-example/
+frontend-example/
 
 # Local databases and runtime data
 **/*.ifworld

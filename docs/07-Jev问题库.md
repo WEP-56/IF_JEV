@@ -1,21 +1,23 @@
 # 07 Jev 问题库
 
-> ⚠️ 本文的接口描述写于实测之前，**已在多处被证伪**（端点、`criteria` 形态、响应字段名、Score 量表）。
-> 实现前请先读 [14 Jev 实测](14-Jev实测.md)，那篇是真实请求的结果，冲突处以它为准。
+> 本文的接口部分已按实测结果修订；实测原始记录与依据见 [14 Jev 实测](14-Jev实测.md)。
 
 ## 1. Jev 接口摘要
 
-整理自 `拍板.md`，以官方文档为准：
+**端点**（实测）：`POST https://openrouter.ai/api/alpha/decisions`。Jev 是 decisions 模型，**不能用 chat/completions 调用**（会返回 400）。它也不出现在 `/api/v1/models` 列表里，探活只能直接打这个端点。
 
-- 请求包含三部分：`state`（字符串、JSON 对象或数组，内容须为文本）、`questions`（带 ID 的问题集合）和 `model`。
-- 三种原语：
-  - **Noul**：命题为真的概率（0–1），可以定义 true / false 各自的含义。
-  - **Choice**：从自定义选项中选择，返回选中项、完整分布和置信度。
-  - **Score**：按自定义的有序量表评分（最多 10 级），返回连续分数、各级概率和置信度。
-- 同一请求中的所有问题看到同一个 state，并行、独立地评估，结果按问题 ID 对齐。
-- 预算：每个请求总计 64k token；state 加上最长的单个问题不超过 32k token。
-- 计费：只计输入 token，state 在一个请求里只计一次，`≈ tokens(state) + Σ tokens(questionᵢ) + 少量序列化开销`；输出免费。
-- 固定版本号（如 `jev-1.13.0`），不使用会漂移的 `jev-latest`。
+- 请求包含三部分：`model`、`state`（字符串、JSON 对象或数组，内容须为文本）、`questions`（`id → 问题` 的 map，**至少一个问题**）。
+- 三种原语，用 `type` 字段判别，取值只有这三个：
+  - **Noul**：`{"type":"noul","instructions":"…"}`，可选 `true_means` / `false_means`。返回命题为真的概率（0–1）。**实测 `true_means`/`false_means` 对输出几乎无影响（≤0.01），措辞才是有效杠杆。**
+  - **Choice**：`{"type":"choice","instructions":"…","criteria":{…}}`。`criteria` 是 **record（对象）** `{"选项ID":"选项说明"}`，选项 ID 就是返回分布的键。
+  - **Score**：`{"type":"score","instructions":"…","criteria":[… ]}`。`criteria` 是 **有序 array**，最多 10 级。
+- **注意两种原语的 `criteria` 形态相反**，写错会直接 400。
+- 响应：`{ "model", "answers", "usage", "id", "provider" }`；`answers.<问题ID>` 按原语给出 `noul` / `choice + probabilities + confidence` / `score + legend + probabilities + confidence`。
+- 同一请求中的所有问题看到同一个 state，并行、独立地评估，结果按问题 ID 对齐。**实测问题数量对延迟影响很小**：1 问 645 ms → 120 问 1 052 ms，120/120 全部正确返回。
+- 预算：每个请求总计 64k token；state 加上最长的单个问题不超过 32k token。实测 27.4k 字符的 state 正常工作。
+- 计费：只计输入 token，state 在一个请求里只计一次；**输出免费**（实测输出 token 未计入 `cost`）。`usage.cost` 直接给出本次成本，不必自行按 token 估算。
+- 固定版本：请求写别名 `typesafe/jev-1.13`，**响应回显的是固定快照**（如 `typesafe/jev-1.13-20260917`），判定记录要存这个回显值。不要用会漂移的别名当版本号。
+- 错误：不合规的请求返回 400，带 zod 风格的 `path`（如 `questions.<id>.criteria`），可对齐到问题模板 ID。**400 属于"请求不合规"，不该进入重试流程。**
 - 官方建议：一个问题只判断一件具体、聚焦的事；多因素的决策拆成多个问题，再由代码组合。
 
 ## 2. 请求打包规则
@@ -29,11 +31,11 @@
 | R5 | **角色视图中不得出现该角色不知道的信息。** 连"他不知道的事"这种清单也不能放。 |
 | R6 | **state 确定性序列化。** 键的顺序固定，便于复现和缓存。 |
 
-示例（问题的字段名以官方文档为准）：
+示例（字段名已按实测校正）：
 
 ```json
 {
-  "model": "jev-1.13.0",
+  "model": "typesafe/jev-1.13",
   "state": {
     "视角人物": "顾言",
     "设定": "……",
@@ -43,8 +45,34 @@
   },
   "questions": {
     "cand_004.notices": { "type": "noul", "instructions": "顾言是否会注意到：林夏在他靠近时刻意换了座位？……" },
-    "cand_006.occurs":  { "type": "noul", "instructions": "在当前情境下，顾言会推迟今晚的行程吗？……" }
+    "cand_006.occurs":  { "type": "noul", "instructions": "在当前情境下，顾言会推迟今晚的行程吗？……" },
+    "cand_007.action": {
+      "type": "choice",
+      "instructions": "顾言接下来最可能做什么？",
+      "criteria": { "leave": "按原计划离开", "stay": "留下", "delay": "推迟行程", "ask": "先问清楚" }
+    }
   }
+}
+```
+
+返回（实测形态）：
+
+```json
+{
+  "model": "typesafe/jev-1.13-20260917",
+  "answers": {
+    "cand_004.notices": { "type": "noul", "noul": 0.58 },
+    "cand_006.occurs":  { "type": "noul", "noul": 0.41 },
+    "cand_007.action":  {
+      "type": "choice",
+      "choice": "delay",
+      "probabilities": { "leave": 0.42, "delay": 0.44, "ask": 0.14, "stay": 0.0 },
+      "confidence": 0.63
+    }
+  },
+  "usage": { "input_tokens": 1168, "output_tokens": 544, "cost": 0.00004906 },
+  "id": "gen-dec-…",
+  "provider": "TypeSafe"
 }
 ```
 
@@ -57,15 +85,23 @@ primitive: noul                # noul | choice | score
 class: O                       # C | O | A | M | D | V（见 06 §1）
 view: pov                      # parse | god | director | pov | narration | check | player
 instructions: "在当前情境下，{subject}会{candidate}吗？只根据{subject}已知的信息、目标和性格判断。"
-true_means: "会这样做"          # Noul 可选
+true_means: "会这样做"          # Noul 可选；实测对输出几乎无影响，不要当作语义开关
 false_means: "不会这样做"
-criteria: []                   # Choice 的选项，或 Score 的等级（最多 10 级）
+criteria: null                 # 仅 choice / score 使用，形态见下
 policy: seeded_sample          # threshold | seeded_sample | numeric | director_term
 threshold: null
 ```
 
+`criteria` 的形态由 `primitive` 决定，**两者相反，容易写错**：
+
+| primitive | criteria 形态 | 示例 |
+|---|---|---|
+| `choice` | **record（对象）**，键即返回分布的键 | `{ "leave": "按原计划离开", "stay": "留下" }` |
+| `score` | **有序 array（最多 10 级）**，索引 0 基 | `["明显缓和", "略微缓和", "持平", "略微升高", "明显升高"]` |
+
 - 模板中的 `{…}` 由引擎填充。
-- 措辞就是行为：只要改了措辞就必须升版本，事件日志记录的是"模板 ID@版本"。
+- 措辞就是行为：只要改了措辞就必须升版本，事件日志记录的是"模板 ID@版本"。**实测支持这条**：同一情境下"…会离开吗"得 0.85、"…符合他的性格吗"得 0.65、"…发生的可能性有多大"得 0.92，三种措辞不可互换。
+- 发生类问题必须用 Noul 的 `true_means`/`false_means` 写成"会发生 / 不会发生"，不能写成"是否合理""是否符合人物"（06 §1）。上一条的实测数据就是这条规则的依据。
 
 ## 4. 核心问题目录（v0.1）
 
@@ -150,20 +186,24 @@ threshold: null
   "template": "q.perception.notices@1",
   "target": "cand_004",
   "view": { "kind": "pov", "holder": "c_gu", "hash": "b3:…" },
-  "model": "jev-1.13.0",
+  "model": "typesafe/jev-1.13-20260917",
   "primitive": "noul",
-  "output": { "probability": 0.58 },
-  "tokens": { "state": 3120, "question": 96 },
+  "output": { "noul": 0.58 },
+  "usage": { "input_tokens": 3216, "cost": 0.00013507 },
   "latency_ms": 140
 }
 ```
 
-Choice 记录完整分布和置信度；Score 记录连续分数、各级概率和置信度。
+- `model` 记响应回显的**固定快照版本**，不是请求用的别名。
+- `output` 按原语：Noul 为 `{ "noul": p }`；Choice 为 `{ "choice", "probabilities", "confidence" }`；Score 为 `{ "score", "legend", "probabilities", "confidence" }`。
+- `usage.cost` 直接取自响应，不要自己按 token 估算。
+- 本文档早期版本用的 `output.probability` 与 `jev-1.13.0` 均与实际不符，已按实测校正。
 
 ## 6. 版本、校准与回归
 
-- **模型版本**：固定版本号，升级前必须跑回归。
+- **模型版本**：请求写别名 `typesafe/jev-1.13`，记录响应回显的快照版本；升级前必须跑回归。
 - **模板版本**：措辞或标准一有改动就升版本。
-- **标注集**：每个约束类、校验类模板准备 40 条左右的人工标注样本【初始值】，用来挑选阈值。违反类问题更看重召回：宁可多拦，不可漏过。
-- **回归**：升级 Jev 版本或修改模板之前，先用标注集比较判定结果；差异超出容忍范围就暂缓升级。
-- **稳定性测试**（额度允许时）：同一个问题换几种说法，看概率是否稳定；打乱 Choice 的选项顺序，看是否存在位置偏差。
+- **标注集**：每个约束类、校验类模板准备 40 条左右的人工标注样本【初始值】，用来挑选阈值。违反类问题更看重召回：宁可多拦，不可漏过。优先校准 `q.beat.violates_fact`：实测违规 0.88 / 合规 0.21，阈值 0.3 的合规侧只剩 0.09 余量，最可能误杀。
+- **回归**：升级 Jev 版本或修改模板之前，先用标注集比较判定结果；差异超出容忍范围就暂缓升级。工具入口：`python tools/jev_probe.py --file <batch>.json --repeat N`。
+- **稳定性测试**：同一个问题换几种说法，看概率是否稳定；打乱 Choice 的选项顺序，看是否存在位置偏差。
+- **已知基线**（实测，可作为回归参照）：跨请求重复 5 次极差 0.01；同批内重复 5 次极差 0.02；Choice 选项顺序打乱三次，选中项不变、概率波动 ≤0.04；20 并发无速率限制问题。
