@@ -1,0 +1,47 @@
+# Rust
+**/target/
+# Node / React / Vite
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/.turbo/
+**/.cache/
+**/coverage/
+**/*.tsbuildinfo
+
+# Tauri build output
+**/src-tauri/target/
+**/src-tauri/gen/
+**/src-tauri/icons/*.icns
+**/src-tauri/icons/*.ico
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+jevkey
+jevkey.txt
+**/*.pem
+**/*.key
+**/*.p12
+
+# Local databases and runtime data
+**/*.ifworld
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
