@@ -1,0 +1,14 @@
+[package]
+name = "if-domain"
+description = "IF 领域类型：主体、命题、事实 / 信念 / 声称、规则、故事线、事件与世界线"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

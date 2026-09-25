@@ -1,0 +1,24 @@
+[package]
+name = "if-app"
+description = "IF 桌面应用：Tauri 命令与事件、设置、密钥"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "if_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+if-agent.workspace = true
+if-domain.workspace = true
+if-judge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }

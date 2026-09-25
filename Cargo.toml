@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/if-domain",
+    "crates/if-store",
+    "crates/if-judge",
+    "crates/if-agent",
+    "crates/if-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/WEP-56/IF_JEV"
+
+[workspace.dependencies]
+if-domain = { path = "crates/if-domain" }
+if-agent = { path = "crates/if-agent" }
+if-judge = { path = "crates/if-judge" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.dev]
+# 这台机器编译很慢，开发档不开调试符号，能省不少时间。
+debug = false

@@ -1,0 +1,15 @@
+[package]
+name = "if-agent"
+description = "IF 的 agent 层：从 Onemore 移植的 agent loop、provider 适配器与工具基础类型"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ureq = "2"

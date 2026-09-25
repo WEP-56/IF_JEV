@@ -9,23 +9,24 @@
 ## 规范与决策
 
 - [x] 确认 docs 中的 D1–D15 待定项
-- [ ] 固定 v1 范围与暂缓功能
+- [x] 固定 v1 范围与暂缓功能（见 docs/15）
 - [x] 确认 Jev API（端点、请求 / 响应 schema、计价、稳定性，见 docs/14）
 - [ ] 固定问题模板版本与阈值（需先做标注集校准）
 
 ## 工程骨架
 
-- [ ] 创建 Rust workspace 与 IF crate 划分
-- [ ] 接入 Onemore agent loop
-- [ ] 建立领域类型与 serde schema
-- [ ] 建立 SQLite 事件日志、投影和世界线存储
-- [ ] 建立 Judge trait、Jev 后端与测试桩
+- [x] 创建 Rust workspace 与 IF crate 划分（先落 `if-domain` / `if-store`，其余按需再建）
+- [x] 接入 Onemore agent loop（`if-agent`：loop、三种 provider 含 Chat Completions、工具与 schema 校验；`IfTaskHost` 随 `if-pipeline` 实现）
+- [x] 建立领域类型与 serde schema
+- [x] 建立 SQLite 事件日志、投影和世界线存储
+- [x] 建立 Judge trait、Jev 后端与测试桩（`if-judge`：Jev、LLM 裁判、测试桩、重试）
+- [x] 接通桌面端真实 LLM 工具调用与 Jev 判定诊断入口（真实账号验收仍待用户）
 - [ ] 建立 Tauri 命令、事件和单世界工作线程
 
 ## 核心回合
 
 - [ ] 实现 IF 解析、导演指令改写和裁定卡数据
-- [ ] 实现 IF 锁定、冲突处理和最小承诺
+- [ ] 实现 IF 锁定、冲突处理和最小承诺（回溯型 v1 只做重释）
 - [ ] 实现候选生成、Jev 判定、命运骰子和裁决策略
 - [ ] 实现场景计划、节拍检查和展示边界
 - [ ] 实现正文回收与 Proposed / Observed / Committed 对账
@@ -43,7 +44,7 @@
 - [ ] 将 frontend-example 对齐为 IF 三种动作：IF、观测、继续
 - [ ] 实现裁定卡、推演卡和按节拍展示
 - [ ] 实现角色、世界、趋势和 IF 导图面板
-- [ ] 实现重写、重掷、分支、回滚和旧世界残影显示
+- [ ] 实现重写、重掷、分支、回滚和未选之路（旧世界残影推迟，见 docs/15）
 
 ## 验证与交付
 

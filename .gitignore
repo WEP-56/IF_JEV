@@ -48,3 +48,6 @@ desktop.ini
 *.log
 *.tmp
 *.temp
+
+# Tauri (crates/if-app)
+crates/if-app/gen/

@@ -1,0 +1,16 @@
+[package]
+name = "if-judge"
+description = "IF 的 Judge 接口：Jev 后端、测试桩与重试"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+if-agent.workspace = true
+if-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "2", features = ["json"] }
