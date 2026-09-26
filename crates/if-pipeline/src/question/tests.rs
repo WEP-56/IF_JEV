@@ -41,11 +41,11 @@ fn every_builder_produces_a_valid_question() {
         scene_advances_thread(0, "雨夜的站台", "顾言会不会离开", "他会离开吗"),
         scene_repetitive(0, "雨夜的站台", "站台对峙、雨中对峙"),
         scene_resolves_thread(0, "雨夜的站台", "顾言会不会离开", "他会离开吗"),
-        beat_violates_fact(1, "城市里没有人能说谎"),
-        beat_violates_rule(1, "宵禁", "入夜后坊门落锁"),
+        beat_violates_fact(1, "city.no_lie", "城市里没有人能说谎"),
+        beat_violates_rule(1, "rule_curfew", "宵禁", "入夜后坊门落锁"),
         beat_knowledge_leak(1, "顾言", "林夏最近避着他"),
-        beat_forbidden_resolution(1, "顾言当场离开"),
-        beat_reveals_secret(1, "林夏是王储"),
+        beat_forbidden_resolution(1, 0, "顾言当场离开"),
+        beat_reveals_secret(1, "p_lin_crown", "林夏是王储"),
         beat_stop_reached(1, "顾言开始怀疑", &[]),
         beat_goal_done(1, "表现林夏的犹豫"),
         tendency_push("tnd_1", "顾言开始怀疑林夏"),
@@ -135,20 +135,45 @@ fn choice_criteria_is_a_record_and_score_criteria_is_a_list() {
 /// 受约束的是叙事视图与否决理由（docs/05 §2.5），不在这里。
 #[test]
 fn check_questions_may_name_the_secret() {
-    let question = beat_reveals_secret(2, "林夏是失踪的王储");
+    let question = beat_reveals_secret(2, "p_lin_crown", "林夏是失踪的王储");
     assert!(question.spec.instructions().contains("林夏是失踪的王储"));
     assert_eq!(question.template, Q_BEAT_REVEALS_SECRET);
 }
 
-/// 节拍问题按 `beat_<n>.<检查项>` 命名，同节拍的多个检查项共用一个 target。
+/// 节拍问题按 `beat_<n>.<检查项>.<对象>` 命名，同节拍的多个检查项共用一个 `target`。
+///
+/// 后缀是必须的：一个节拍要查的事实/规则/秘密都是**多条**，只写 `beat_3.fact`
+/// 会让第二个覆盖第一个，`JudgeRequest::validate` 直接判为键重复并拒绝整个请求。
 #[test]
 fn beat_questions_are_namespaced_by_beat_index() {
-    let fact = beat_violates_fact(3, "宵禁");
-    let rule = beat_violates_rule(3, "没人能说谎", "只能沉默");
-    assert_eq!(fact.key, "beat_3.fact");
-    assert_eq!(rule.key, "beat_3.rule");
+    let fact = beat_violates_fact(3, "city.no_lie", "宵禁");
+    let rule = beat_violates_rule(3, "rule_curfew", "没人能说谎", "只能沉默");
+    assert_eq!(fact.key, "beat_3.fact.city.no_lie");
+    assert_eq!(rule.key, "beat_3.rule.rule_curfew");
     assert_eq!(fact.target, rule.target);
     assert_eq!(fact.target, "beat_3");
+}
+
+/// 同一节拍的多条同类检查必须拿到**互不相同**的键（docs/07 §2 R1）。
+#[test]
+fn repeated_checks_on_one_beat_never_collide() {
+    let questions = vec![
+        beat_violates_fact(2, "c_lin.evidence", "那封信在林夏手上"),
+        beat_violates_fact(2, "world.rain", "外面在下雨"),
+        beat_violates_rule(2, "rule_night", "夜里宫门落锁", "仅限皇城宫门"),
+        beat_violates_rule(2, "rule_curfew", "宵禁", ""),
+        beat_forbidden_resolution(2, 0, "顾言当众承认"),
+        beat_forbidden_resolution(2, 1, "林夏交出信"),
+        beat_reveals_secret(2, "c_gu.secret", "顾言是失踪的王储"),
+        beat_reveals_secret(2, "c_lin.evidence", "那封信在林夏手上"),
+        beat_knowledge_leak(2, "林夏", "外面在下雨"),
+        beat_knowledge_leak(2, "顾言", "外面在下雨"),
+    ];
+    let mut keys = std::collections::BTreeSet::new();
+    for question in &questions {
+        assert!(keys.insert(question.key.clone()), "键重复：{}", question.key);
+    }
+    assert_eq!(keys.len(), questions.len());
 }
 
 /// 停止条件的问题要带上此前已放行的节拍，否则「到这一节拍为止」无从判断。

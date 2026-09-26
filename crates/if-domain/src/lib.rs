@@ -33,7 +33,7 @@ pub mod value;
 pub mod worldline;
 
 pub use event::{
-    CausedBy, DigestionStrategy, Event, EventType, IfInjection, IfKind, IfScope, Patch,
+    CausedBy, DigestionStrategy, Event, EventDraft, EventType, IfInjection, IfKind, IfScope, Patch,
     Retcon, TimeAnchor,
 };
 pub use id::{

@@ -16,7 +16,8 @@
 ## 工程骨架
 
 - [x] 创建 Rust workspace 与 IF crate 划分（先落 `if-domain` / `if-store`，其余按需再建）
-- [x] 接入 Onemore agent loop（`if-agent`：loop、三种 provider 含 Chat Completions、工具与 schema 校验；`IfTaskHost` 随 `if-pipeline` 实现）
+- [x] 接入 Onemore agent loop（`if-agent`：loop、三种 provider 含 Chat Completions、工具与 schema 校验）
+- [ ] `IfTaskHost` 与五个 agent 任务（T-impact / T-scenes / T-plan / T-render / T-extract）——`if-pipeline` 已就位，只差这一层把提议喂进去（见 docs/16 §5 第 1 项）
 - [x] 建立领域类型与 serde schema
 - [x] 建立 SQLite 事件日志、投影和世界线存储
 - [x] 建立 Judge trait、Jev 后端与测试桩（`if-judge`：Jev、LLM 裁判、测试桩、重试）
@@ -38,19 +39,27 @@
   - 已有确定性冲突预检的雏形（相反断言识别 + 重释）；锁定等级与保护期尚未接入。
 - [ ] 实现候选生成、Jev 判定、命运骰子和裁决策略
   - [x] 确定性裁决部分已落地（`crates/if-policy`）：阈值表与一致性严格度、命运骰子的决策键生成与抽样（发生类 / 互斥类 / 数值机制）、按 `depends_on` 的分层拓扑排序（≤3 层因果深度，超出的推迟或转趋势）、观察带与趋势转化、导演评分与场景选择。
-  - [ ] 候选生成（T-impact）与把 Jev 的判定接进裁决——随 `if-pipeline`。
+  - [x] **把 Jev 的判定接进裁决**（`if-pipeline::candidates`）：约束门（在人物 / 知识缺口，只比阈值不掷骰）→ 发生类与互斥类判定 → 按 `depends_on` 分层裁决；被否决但压力够的转趋势。
+  - [ ] 候选生成（T-impact）：由 agent 任务从「已锁定的 IF + 当前投影」提出候选，喂 `candidates::adjudicate`。
 - [ ] 实现场景计划、节拍检查和展示边界
+  - [x] 场景候选与导演选择（`if-pipeline::scenes`）：受保护故事线的硬否决 → Jev 四项 + 引擎四项评分 → `scene_select@<叙述序号>` 骰子抽取。
+  - [x] 逐节拍检查（`if-pipeline::beats`）：事实 / 规则 / 认知边界 / 本场景禁止项 / 未批准秘密 / 停止条件 / 节拍目标；重试上限 2。
+  - [ ] 场景计划（T-plan）与正文切节拍（T-render）由 agent 任务提供——`if-pipeline` 只接收已经切好的 `ScenePlan` / `BeatProposal`。
+  - [ ] 展示背压（未裁决节拍上限）属流式读取侧，不在 `if-pipeline` 内（见 docs/04 §4.7）。
 - [ ] 实现正文回收与 Proposed / Observed / Committed 对账
+  - [x] 对账落地（`if-pipeline::commit`）：docs/02 §11 四条规则 + 「同命题保留锁定最强的那条」→ 固定顺序的事件草稿（`DraftCursor` 先算号再写）。
+  - [ ] 正文回收（T-extract）：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对；正文本身存不存成事件待 T-render 接入后再定（docs/16 §4）。
 - [ ] 实现继续回合、观测和基础后台结算
 
 ## 视图与导入
 
 - [ ] 实现上帝、导演、角色、叙事、检查、解析和玩家视图
   - [x] 视图编译已落地（`crates/if-views`）：八种视图的状态装配、按预算裁剪、可见性判定（public / private / secret，外加 L1 保护期）与稳定指纹。
-  - [ ] 接进回合流程（判定请求与正文生成都要从这里取视图）。
+  - [x] **接进回合流程**（`if-pipeline::context::view(kind)`）：判定请求、场景评分、节拍检查与叙事视图都从 `if-views` 取，不再各自拼状态。
 - [ ] 实现世界书激活与预算裁剪
   - [x] 预算裁剪（`crates/if-views`：整段丢弃 + 按锁定等级裁剪）。
-  - [ ] 世界书激活（关键词 / 主体 / 条件 / 概率），随 `if-lore`。
+  - [x] 世界书激活（关键词 / 主体 / 概率）已落地（`if-pipeline::lore`，被 `context::activate_for_turn` 调用，是 docs/08 §5 的第一个真实调用方）。
+  - [ ] 迁位 `if-lore` 与条件类激活补全——与 T-parse 同一触发条件（docs/16 §5 第 2 项）。
 - [ ] 实现世界创建、世界卡和角色定型
 - [ ] 实现酒馆角色卡与世界书导入
   - [x] 确定性解析：V1 / V2 / V3 卡、PNG `chara` / `ccv3` 文本块、CCv3 与酒馆运行时两套世界书方言（`crates/if-app/src/importer/`）
@@ -74,7 +83,7 @@
 - [ ] 把「真实会话」与演示故事（`initialStories`）在侧栏里分开——现在排在同一个列表里
 - [ ] 实现裁定卡、推演卡和按节拍展示
   - [x] 裁定卡（`ChatView.tsx`，含冲突展示与重释入口）。
-  - [ ] 推演卡与按节拍展示（随 `if-pipeline`）。
+  - [ ] 推演卡与按节拍展示：`if-pipeline` 已产出节拍与对账结果，但没有 Tauri 命令、前端拿不到，也没人把它画出来（见 docs/16 §4）。
 - [ ] 实现角色、世界、趋势和 IF 导图面板
   - [x] 角色 / 世界名 / 设定条目 / 规则改由**投影**重建（`app/src/projection.ts`），设定条目在「世界」页签下按归段显示。
   - [ ] 趋势与 IF 导图（世界线）尚未接投影。
@@ -82,13 +91,15 @@
 
 ## 验证与交付
 
-- [ ] 添加事件重放、投影、视图隔离和工具 schema 测试
+- [x] 添加事件重放、投影、视图隔离和工具 schema 测试
   - [x] 视图隔离与指纹确定性（`crates/if-views`，30 项）。
   - [x] 裁决确定性、阈值方向、分层排序与趋势转化（`crates/if-policy`，60 项）。
   - [x] 事件重放（`crates/if-judge/tests/replay.rs`）。
-  - [x] 事件 ID 分配规则（`crates/if-store/tests/replay.rs`：`next_seq` 与 `append_batch` 一致）与跨 crate 契约（`crates/if-app/src/seed/tests.rs`：预分配的 ID == 实际写出的 ID）。
+  - [x] 事件 ID 分配规则（`crates/if-store/tests/replay.rs`：`next_seq` 与 `append_batch` 一致）与跨 crate 契约（`crates/if-app/src/seed/tests.rs`：预分配的 ID == 实际写出的 ID；`if-pipeline::commit::DraftCursor` 是第三种用法）。
   - [x] 播种确定性（`seed.rs`，21 项）与会话创建 / 列举 / 恢复 / 删除（`session.rs`，13 项，真实文件 + 真实 SQLite）。
-  - [ ] 回合级的端到端重放：同一事件序列 + 同一裁决必须得到同一个投影。
+  - [x] 工具 schema 校验（`crates/if-agent/src/tools/schema.rs`：`schema_failures_never_reach_execute`）。
+  - [x] **回合级的端到端重放**：同一事件序列 + 同一裁决得到同一个投影——`if-pipeline/src/turn/tests.rs::replaying_the_same_turn_reconstructs_the_same_projection` 用**真实 SQLite** 跑两遍，断言两份投影逐字节相同。
+  - [x] 回合编排单测（`crates/if-pipeline`，101 项）：约束门 / 分层裁决 / 场景评分与骰子 / 逐节拍检查 / 对账与草稿顺序 / 判定 ID 全局唯一 / 事件带场景与节拍。
 - [ ] 用真实 Jev / LLM 配置完成一轮端到端演练
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收
 - [ ] 记录已知限制并整理 v1 发布清单

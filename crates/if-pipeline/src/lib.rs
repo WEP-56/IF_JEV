@@ -8,11 +8,12 @@
 //!
 //! - 需要模型的地方，只向 [`if_judge::Judge`] 发问（视图 + 问题）；
 //!   真实 Jev、LLM 裁判、测试桩在它眼里是同一个东西。
-//! - 需要叙事文本的地方，接收**提议**（候选、场景、节拍），而不是自己生成；
+//! - 需要叙事文本的地方，接收**提议**（候选、场景、计划、节拍），而不是自己生成；
 //!   从模型那里拿到提议是 agent 任务的事（docs/05），本 crate 只负责
 //!   「提议进来 → 判定出去 → 补丁出去」。
-//! - 产出的是一批 [`if_domain::EventDraft`]，写不写、写去哪由调用方（`if-app` 的
-//!   世界工作线程）决定。
+//! - 产出的是 [`if_domain::event::EventDraft`]，写不写、写去哪由调用方（`if-app` 的
+//!   世界工作线程）决定。草稿里的 ID 由调用方按 `Store::next_seq()` 起顺号发，
+//!   与 `append_batch` 是同一条契约（见 [`commit::DraftCursor`]）。
 //!
 //! 于是整个回合可以在**没有网络、没有数据库**的情况下被端到端测试：
 //! 测试桩给出固定概率，提议直接构造，断言落在事件序列与投影上。
@@ -23,36 +24,63 @@
 //! ```text
 //! 提议（来自 agent 任务）          本 crate                    产物
 //! ────────────────────────────────────────────────────────────────────
-//! T-impact 的候选      →  candidates  约束门 + 分层裁决      accepted / rejected
-//! T-scenes 的场景      →  scenes     导演评分 + 骰子抽取     选中的场景
-//! T-plan 的场景计划     →  （类型来自 if-domain）            ScenePlan
-//! 激活的设定条目        →  lore       世界书激活             Vec<LoreEntry>
-//! T-render 的正文      →  beats      逐节拍检查放行          放行的节拍
-//! 以上全部             →  commit     裁决结果 → 事件补丁      Vec<EventDraft>
+//! （调用方已锁定 IF）        →  context    回合上下文 + 世界书激活
+//! T-impact 的候选            →  candidates 约束门 + 发生类判定 + 分层裁决  accepted / rejected
+//! T-scenes 的场景            →  scenes     硬否决 + 导演评分 + 骰子抽取     选中的场景
+//! T-plan 的场景计划           →  turn       引擎注入硬约束                 ScenePlan
+//! T-render 的正文            →  beats      逐节拍检查放行                 放行的节拍
+//! T-extract 的抽取 + 裁决结果 →  commit     对账 → 事件草稿                Vec<EventDraft>
+//! 以上全部                   →  turn       open() / resolve() 两段驱动
+//! 三段判定                   →  audit      回合内唯一的判定序号游标
 //! ```
 //!
-//! [`turn`] 把上面这些串成一个回合；其余模块各自只做一件事，可以单独测。
-//!
-//! **当前进度（别把它当成已完成）**：只有 [`lore`] 与 [`question`] 两块落地了，
-//! 其余四个模块（`candidates` / `scenes` / `beats` / `commit` / `turn`）**尚未创建**。
-//! 也就是说这个 crate 现在还**跑不出一个回合**，它提供的是「世界书激活」与
-//! 「问题构造」两个零件。上面那张表是目标形状，不是现状。
+//! [`turn::open`] 与 [`turn::resolve`] 之间夹着 T-plan——**顺序不能拧反**：
+//! 场景要先选出来，才谈得上给它写计划。两段之间是调用方的 agent 任务（还未实现）。
 //!
 //! ## 两条不可退让的性质
 //!
 //! 1. **约束类永不掷骰**（docs/06 §1）。合规检查与「是否符合人设」只比阈值，
 //!    骰子只在发生类与互斥类上出现。
 //! 2. **同一输入同一结果**（docs/12 §7）。所有集合用 `BTreeMap` / 有序 `Vec`，
-//!    骰子由世界种子驱动，不读时钟、不读随机数。
+//!    骰子由世界种子驱动，不读时钟、不读随机数。节拍上屏的现实时刻是唯一的例外，
+//!    而它由调用方显式传入、且不进投影。
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod audit;
+pub mod beats;
+pub mod candidates;
+pub mod commit;
+pub mod context;
 pub mod lore;
 pub mod question;
+pub mod scenes;
+pub mod turn;
 
-pub use lore::{activate_lore, LoreSignals};
-pub use question::{template_id, TEMPLATES};
+/// 各阶段共享的测试夹具：一个够小、但每种东西都有一份的世界。
+///
+/// 它只在测试构建里存在。放在 crate 内而不是 `tests/` 下，是因为**同一份输入要被
+/// 所有阶段共用**——「L1 保护期在候选裁决和节拍检查里算的是同一个场景序号」这类性质，
+/// 只有夹具唯一时才真的被验证。
+#[cfg(test)]
+pub mod testsupport;
+
+pub use audit::Audit;
+pub use beats::{
+    BeatBlock, BeatProposal, BeatRound, BeatStop, BeatVerdict, RetryLedger, MAX_FACT_CHECKS,
+    MAX_RULE_CHECKS,
+};
+pub use candidates::{adjudicate, CandidateGate, ImpactOutcome, ImpactRequest};
+pub use commit::{
+    proposed_from, reconcile, ChangeSource, CommittedChange, DraftCursor, ObservedChange,
+    ProposedChange, Reconciliation, SceneCommit, ThreadUpdate, TurnCommit,
+};
+pub use context::{activate_for_turn, subject_name, TurnContext, DEFAULT_RECENT_BEATS};
+pub use scenes::{
+    SceneChoice, SceneProposal, SceneRequest, SceneScore, SceneVeto, DEFAULT_BALANCE_WINDOW,
+};
+pub use turn::{inject_constraints, open, record, OpenRequest, Opening, ResolveRequest, SceneOutcome};
 
 /// 回合编排中可能出现的失败。
 ///

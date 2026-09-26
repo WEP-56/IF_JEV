@@ -1,22 +1,26 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-26**（会话列表修复获真机验收后）。此时 `main` = **`4c182c5`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
+> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后）。此时 `main` = **`__HASH__`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
 
 ## 0. 冷启动速览（先读这一节）
 
 **现状一句话**：世界库（导入 / 手写 / 持久化）、会话（创建 / 重启恢复 / 删除）、播种、
-IF 注入与裁定卡都已打通；**缺的是一个完整的 IF 回合**——候选生成 → 分层裁决 → 场景计划 →
-逐节拍检查 → 正文回收 → 提交。
+IF 注入与裁定卡、以及**一个可提交的 IF 回合**（`if-pipeline`：
+T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → 对账 → 事件草稿）
+现在都在仓库里且单测全绿。**缺的是把这些提议接进来的人**——
+`if-pipeline` 不认识 LLM、也不认识存储，候选 / 场景 / 计划 / 节拍都要由 agent 任务提供，
+而那几个任务（`IfTaskHost` 那一层）与 `if-app` 的接线还没写。所以：
+**「能跑完一个回合」指的是接口齐全 + 测试驱动，不是界面上能点。**
 
-**下一步只有一件事**：建 `if-pipeline`（见 §5）。裁决（`if-policy`）与视图（`if-views`）
-两层**已经写完、单测全绿、只是没有调用方**，所以要写的是**编排**，
-先用 Judge stub + scripted provider 把全流程跑通。
+**下一步只有一件事**：写 T-impact / T-scenes / T-plan / T-render / T-extract 这五个 agent 任务，
+把它们接进 `if-app` 的世界工作线程（见 §5 第 1 项）。先用 scripted provider 跑通，
+`if-pipeline` 的输入是**提议**，所以「provider 是假的」不影响回合合同被验证。
 
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    312 passed / 0 failed
+cargo test --workspace                    413 passed / 0 failed
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 342.90 kB）
@@ -33,6 +37,7 @@ cd app && npm run build                   通过（1916 模块 / 342.90 kB）
 | 输入 `IF xxxx` → 落裁定卡 → 确认写进事件日志 | ⬜ 代码已接，真机待确认 |
 | 真实 Jev / LLM 的连通性与 smoke 判定（`test_llm` / `test_judge`） | ✅ 已真机验过，见 [14](14-Jev实测.md) |
 | 三种剩余的真实方言（V3 `assets` / `@@` 装饰器 / 独立 `lorebook_v3`） | ⬜ 用户已明确推迟（见 §4） |
+| 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **还没有界面入口**（见 §5） |
 
 **两件容易被误当成 bug 的事**（都是刻意的，别去「修」）：
 
@@ -66,6 +71,7 @@ crates/if-app/          Tauri 命令、事件、设置、密钥、世界工作�
   src/session.rs        会话的创建 / 列举 / 恢复 / 删除（选世界资产 → 写 .ifworld → 登记引用）
   src/slug.rs           名字 → 文件名 / ID 片段的共用规则（保留中文）
 crates/if-domain/       领域类型、事件补丁、投影、世界线、回合记录、裁定卡
+crates/if-pipeline/     回合编排（见 §3）：context / candidates / scenes / beats / commit / turn / audit
 crates/if-views/        视图编译、可见性判定、预算裁剪、稳定指纹
 crates/if-policy/       阈值表、命运骰子、分层裁决、观察带与趋势、导演评分
 crates/if-store/        SQLite 事件日志、投影、快照、世界线
@@ -75,9 +81,9 @@ crates/if-judge/        Jev、LLM 裁判、测试桩与重试
 docs/                   正式设计与工程文档
 ```
 
-crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚未创建**；
-已落地 crate 之间的依赖是单向的 `if-domain → if-views → if-policy`，
-`if-pipeline` 建成后依赖全部四者。
+crate 划分见 [12 §3](12-工程架构.md)。`if-lore` **尚未创建**（酒馆导入暂放 `if-app/importer/`，
+迁移时机见 [12 §3](12-工程架构.md)）；已落地 crate 之间的依赖是单向的
+`if-domain → if-views / if-policy → if-pipeline → if-app`。
 
 关键原则：
 
@@ -86,6 +92,9 @@ crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚�
 3. API 密钥走系统钥匙串，不进入 localStorage 或世界文件。
 4. 真实 LLM/Jev 和叙事质量由用户验收；Agent 负责静态、模拟和可自动化测试。
 5. 单个源文件 ≤ 1000 行；接近上限按职责拆模块（`AGENTS.md`）。
+6. **`if-pipeline` 不认识网络、也不认识 SQLite**：需要模型只向 `if_judge::Judge` 发问，
+   需要文本只接收**提议**，产出是 `if_domain::event::EventDraft`。所以整个回合能在没有网络、
+   没有数据库的情况下端到端测试——这正是 [12 §9](12-工程架构.md) 要的东西。
 
 ## 3. 当前已打通
 
@@ -120,6 +129,8 @@ crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚�
   这条契约由两侧钉住：`if-store::tests::event_ids_follow_next_seq`（发号规则）与
   `if-app::seed::tests::plan_matches_store_allocation`（推出来的号 == 实际写出来的号）。
   改 `append_batch` 的分配方式时这两个测试会红——那是设计如此。
+  同一条契约在 `if-pipeline::commit::DraftCursor` 上是第三种用法（回合的草稿也先算号再写，
+  因为 `Fact::source` / `Tendency::contributors` 存的也是引入它的事件 ID）。
 
 IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
@@ -152,11 +163,83 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 - **按来源整组替换**：来源身份键是「来源类别 + 名字」（不含卡版本 / 文件名 / 内容哈希），同一来源重导先删该来源的旧条目再写入新的。内容哈希另存一列回答「是不是同一份」。
 - `delete_world_asset` 在被 `world_sessions` 引用时**拒绝**，并说明有几个会话在用。
 
-裁决与视图（纯计算、无网络，尚未接入回合流程）：
+### 回合编排（`if-pipeline`，[04](04-回合流程.md)）
 
-- `if-views`：把投影编译成「某个消费方有资格看到的形式」。八种视图（parse / god / director / pov / narration / check / player / creation）的状态装配、预算裁剪、`public / private / secret` 可见性判定外加 L1 保护期，以及判定记录要存的稳定指纹。P9（视角隔离）的唯一落点就在这里。
-- `if-policy`：阈值表（docs/06 §2，含一致性严格度的线性收紧与上下限夹紧）、命运骰子的决策键生成与抽样（发生类 / 互斥类 / 数值机制）、按 `depends_on` 的分层拓扑排序（≤3 层因果深度，超出的推迟或转趋势）、观察带与趋势转化（`p ≥ τ_watch` → 初始压力 `p × 0.5`）、导演评分与场景选择。
-- 两者都只被单元测试覆盖，**还没有调用方**——接进回合流程是 `if-pipeline` 的活。
+**这是本轮新落地的部分：一个可提交的 IF 回合已经能端到端跑通，101 项单测覆盖。**
+
+模块与各自在回合里的位置：
+
+| 模块 | 对应步骤 | 做什么 |
+|---|---|---|
+| `context` | 全程 | 一次回合共用的输入（场景序号 / 世界时间 / 焦点与在场 / 严格度 / 阈值表）+ 按它造视图与策略 + **世界书激活**（`activate_for_turn` 是 [08 §5](08-视图与世界书.md) 的第一个真实调用方） |
+| `audit` | 全程 | 回合内唯一的判定序号游标。**三段判定共用**——各自从 1 发号会让 `Beat::judgments` 的 ID 在 `TurnRecord` 里指错记录 |
+| `candidates` | 6–7 | 约束门（在人物 / 知识缺口，**只比阈值、不掷骰**）→ 发生类与互斥类判定 → 按 `depends_on` 分层裁决。约束门先跑，被否决的候选不再花一次发生类判定 |
+| `scenes` | 8–9 | 受保护故事线的**硬否决**（在请求发出之前拿掉，不问判定）→ 导演评分（Jev 四项 + 引擎四项）→ 按 `scene_select@<叙述序号>` 的骰子抽取 |
+| `beats` | 11 | 逐节拍检查：事实（按锁定降序截断 **12** 条）/ 规则（**8** 条）/ 每个在场角色的认知边界 / 本场景禁止项 / 未批准揭示的秘密 / 停止条件 / 节拍目标。重试上限 **2**；非必需节拍跳过，必需节拍止损 |
+| `commit` | 12–13 | 对账（[02 §11](02-世界模型.md) 四条规则 + 「同命题只提交一次，保留**锁定最强**的那条」）→ 固定顺序的事件草稿（**命题先于引用它的事实**） |
+| `turn` | 6–13 | `open()`（6–9）与 `resolve()`（10–13）两段驱动，中间夹 T-plan；`inject_constraints` 把受保护线的禁止项写进计划；`record()` 汇成 `TurnRecord` |
+
+几条必须记住的性质：
+
+- **约束类永不掷骰**（[06 §1](06-裁决策略.md)）：合规检查与「是否符合人设」只比阈值，
+  骰子只出现在发生类与互斥类上。缺判定按「不通过 / 不发生」处理——宁可让模型重写一次，
+  也不要让违规正文上屏。
+- **否决理由不能说出秘密**（[05 §2 · §6](05-Agent运行时.md)）：检查视图里可以点名秘密，
+  但回给模型的理由必须是「涉及尚未批准揭示的内容」。`BeatBlock` 因此分两个字段：
+  `reason` 是能说给模型听的那一份，`template` / `probability` 只进判定记录。
+- **同一输入同一结果**（[12 §7](12-工程架构.md)）：所有集合用 `BTreeMap` / 有序 `Vec`，
+  骰子由世界种子驱动，不读时钟。节拍上屏的现实时刻是唯一例外，由调用方显式传入、且不进投影。
+- **两段驱动的顺序不能拧反**：场景要先选出来，才谈得上给它写计划。所以没有
+  `run_if_turn` 式的大函数——那只会逼调用方在选场景之前把计划交上来。
+
+**本轮顺手修掉的 6 个缺陷（都由新测试逮住，别再引入）**：
+
+1. **节拍检查的问题键会重复**：一个节拍要查多条事实 / 规则 / 禁止项 / 秘密，而键写成
+   `beat_{n}.fact`，第二条就覆盖第一条，`JudgeRequest::validate` 直接判重并拒绝**整个请求**
+   ——后果是「世界书条目一多，节拍检查就整个跑不起来」。现在键带被检查对象的标识
+   （事实用命题 ID，规则用规则 ID，禁止项用位序）。钉在
+   `question::tests::repeated_checks_on_one_beat_never_collide`。
+2. **`reason_for` 的模板比对永远不相等**：它拿「去掉 `@版本` 的名字」去比
+   `Q_BEAT_VIOLATES_FACT` 这类**本身带 `@1`** 的常量，于是每条分支都匹配不上，
+   所有否决理由静默退化成「未通过检查」——模型只知道没过、不知道改哪儿。
+   现在两侧都削版本，并有一张 `BLOCK_REASONS` 表和
+   `beats::tests::every_blocked_template_has_a_reason_for_the_model` 盯着它。
+3. **判定记录 ID 跨段重复**：影响裁决、场景选择、逐节拍检查各自从 `jdg_0001` 起编号，
+   于是 `jdg_0001` 在 `TurnRecord` 里同时命中两条不同记录，审计会查错。
+   现在由 `audit::Audit` 统一发号，`Opening.audit` 把游标带到第二段。
+   钉在 `turn::tests::judgment_ids_are_unique_across_the_whole_turn`。
+4. **事件草稿没带场景 / 节拍**：`EventDraft` 的 `scene` / `beat` 两个字段是**会落库并读回**的
+   （`events.scene` / `events.beat`），不填就是永远 NULL——事后按场景查事件是一片空。
+   现在 `DraftCursor` 在推草稿时盖上。钉在
+   `turn::tests::a_turn_stamps_its_scene_and_beat_on_every_event_it_writes`。
+5. **对账去重按插入顺序**：同一条变化常常既是 Observed（从正文抽出来的）又是
+   「正文里确实发生了的预演」，按插入顺序去重会留下先插进去的 Observed（`Lock::L0`），
+   **把 IF 带来的 L2 静默降成自由状态**。现在保留锁定最强的那一条。
+   钉在 `commit::tests::the_strongest_lock_survives_when_the_text_confirms_a_change`。
+6. **导演评分用错了「当前场景序号」**：`overdue_bonus` 拿 `projection.scenes.len()` 当当前序号，
+   而 `Thread::last_advanced` 记的是**场景序号**（[02 §10](02-世界模型.md)）——
+   被否决而跳过的场景不进投影，逾期度会永远低估。现在用 `ctx.scene_index`。
+
+**回合级端到端重放**（[12 §9](12-工程架构.md) 要求的、TODO 里空着的那条）现在有了：
+`turn::tests::replaying_the_same_turn_reconstructs_the_same_projection` 用**真实 SQLite**
+（内存库 + `append_batch`）跑两遍同一条世界线 —— 事件从库折出投影、喂给回合、
+回合产物写回库、再折一次 —— 断言两份投影**逐字节相同**（含序列化键序）。
+它同时验了骰子的确定性、草稿的可折叠性与投影只由事件决定这三件事。
+
+### 视图与裁决两层
+
+纯计算、无网络，**已被 `if-pipeline` 调用**（不再是「没有调用方」）：
+
+- `if-views`：把投影编译成「某个消费方有资格看到的形式」。八种视图
+  （parse / god / director / pov / narration / check / player / creation）的状态装配、
+  预算裁剪、`public / private / secret` 可见性判定外加 L1 保护期，以及判定记录要存的稳定指纹。
+  P9（视角隔离）的唯一落点就在这里。**检查视图含未批准揭示的秘密**，叙事视图不含。
+- `if-policy`：阈值表（[06 §2](06-裁决策略.md)，含一致性严格度的线性收紧与上下限夹紧）、
+  命运骰子的决策键生成与抽样、按 `depends_on` 的分层拓扑排序（≤3 层因果深度）、
+  观察带与趋势转化（`p ≥ τ_watch` → 初始压力 `p × 0.5`）、导演评分与场景选择。
+- `if-judge`：`Judge` trait + Jev / LLM 裁判 / `StubJudge`。**`StubJudge` 的默认值是 0.5**，
+  而「触发类」模板的方向是 `HigherFlags`（越高越可疑）——所以要构造「干净的一回合」，
+  必须显式把 `q.beat.*` 那几条压到 0，别以为是桩坏了。
 
 ### 前端
 
@@ -172,7 +255,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 312 个测试通过（19 个测试目标 + 7 个 doc-test 目标）
+cargo test --workspace              # 当前 413 个测试通过
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
@@ -181,7 +264,7 @@ npm run build                       # vite 生产构建
 npm run tauri dev                   # 需要桌面验收时
 ```
 
-> ⚠️ 2026-09-26 实测更正：`cargo` **可以在 Git Bash 里直接跑**（`cargo check -p if-domain` 13s 通过），旧笔记里「cargo 会静默死掉」的说法不再成立。
+> ⚠️ 2026-09-26 实测更正：`cargo` **可以在 Git Bash 里直接跑**（`cargo test --workspace` 19–60s 增量通过），旧笔记里「cargo 会静默死掉」的说法不再成立。
 > 若用工具调用，把输出重定向到文件再读最稳：`cargo test --workspace > /tmp/t.log 2>&1`。
 > 构建日志里每个 crate 一条 `hard linking files in the incremental compilation cache failed`
 > 是 `E:` 盘不支持硬链接导致的，与代码无关。
@@ -247,14 +330,19 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 - **来源改名 = 新来源**：`source_key` 只取「来源类别 + 名字」，用户把卡改名后再导入会与旧的并存（可见、可删），而不是替换。这是刻意的取舍，见 [10 §7.0](10-世界创建与导入.md)。
 - **数字型条目 `id` 未被识别**：`{"0":{"id":7,...}}` 这类条目，`uid` 会回落到 map 键 `"0"` 而不是 `7`（`lorebook::parse_entry` 的 `text(entry, "id")` 只读字符串）。影响的是「回指原文件」的精度，不影响来源身份与替换；等真实卡补测时一并处理。
 - **裁定卡 UI 已经有了**（`app/src/components/ChatView.tsx`：措辞可编辑 + 取消 / 确认并锁定 / 按重释确认）。
-  缺的不是卡，而是**卡之后的那半程**——确认之后不会产出正文。
-- `if-views` / `if-policy` 已落地且单测全绿，但**没有任何调用方**。也就是说：
-  「谁有权看到哪些事实」和「概率怎么变成结果」两件事都已经能算，只是回合流程还没去用它们。
-- 尚无候选生成、场景计划、节拍检查、正文回收和提交闭环——这些属于尚未创建的 `if-pipeline`。
+  缺的不是卡，而是**卡之后的那半程**的**界面入口**——确认之后不会产出正文。
+- **`if-pipeline` 只有库、没有司机**：它把「提议 → 判定 → 补丁」这段编排写完了，
+  但提议要由 agent 任务（T-impact / T-scenes / T-plan / T-render / T-extract）提供，
+  那五个任务与 `if-app::world_worker` 的接线**都还没写**。所以：
+  - 没有候选生成、没有真正的场景计划、没有 T-render 切节拍、没有 T-extract 回收正文；
+  - `if-pipeline` 也**没有 Tauri 命令**，前端完全看不到它；
+  - 它跑的是「测试驱动的一回合」，不是「点一下就能推进一步的一回合」。
+- **`if-lore` 仍未创建**：世界书激活（[08 §5](08-视图与世界书.md)）的逻辑在 `if-pipeline::lore`
+  里已落地并被 `context::activate_for_turn` 调用，但按 [12 §3](12-工程架构.md) 它**该住在 `if-lore`**。
+  迁移与 T-parse 是同一个触发条件（都要开始处理条目的语义），见 §5。
 - 前端：角色 / 世界名 / 设定条目 / 规则已经改由**投影**重建（`app/src/projection.ts`），
   导入 / 手动撰写 / 删除走真实 IPC；但 **IF 导图（世界线）面板还没接投影**，
-  候选生成与节拍展示也还没有——所以「能玩」目前指的是「能建会话、能看到世界、能落一张裁定卡」，
-  不是「能推进一个回合」。
+  趋势面板也没接；推演卡与按节拍展示**还没有**（`if-pipeline` 产出了节拍，但没人把它画出来）。
 - `open_world` 已有命令，但前端尚未提供世界文件选择器（v1 会话一律经世界库创建）。
 - 世界资产的**世界层内容仍是不透明 payload**（`ImportedWorld` 的 JSON）：`if-store` 不解释它，
   重建世界视图靠 `if-app::library` 反序列化。**这是刻意的分层**，不是待换的临时状态——
@@ -262,16 +350,24 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
   只有等 `library.db` 真的需要按世界字段检索时，才有理由把它换成有类型的结构。
 - **播种不解释设定条目的语义**：条目的「承重 / 氛围」分流交给 T-parse 与 LLM 草案
   （[10 §3.0](10-世界创建与导入.md)），播种只搬运。所以世界书条目现在全部按 `Public` 落入
-  `LoreEntry`，关键词 / 常驻标志被如实带上，但**世界书激活（[08 §5](08-视图与世界书.md)）还没有调用方**。
+  `LoreEntry`，关键词 / 常驻标志被如实带上；激活由 `if-pipeline::context::activate_for_turn` 做。
 - **侧栏混着演示故事**：Tauri 模式下真实会话排在 `initialStories` 前面，但两者仍在同一份
   `stories` 状态里。演示故事背后没有世界文件、发 IF 不会落到它们身上。把两者分开（真实会话单独一组）
   是下一刀，不是现在的阻塞项。
-- **聊天记录不持久化**：`.ifworld` 里是**事件**，`messages` 只是前端缓存（docs/12 §5）。
-  所以重开一条会话看到的是「开场白 + 一条现状摘要」，不是上次的对话原文——
-  对话原文要等正文回收（`if-pipeline` 的 Proposed / Observed / Committed）落地后才知道该不该存、怎么存。
+- **聊天记录不持久化**：`.ifworld` 里是**事件**，`messages` 只是前端缓存（[12 §5](12-工程架构.md)）。
+  所以重开一条会话看到的是「开场白 + 一条现状摘要」，不是上次的对话原文。
+  回合的对账已经能决定「哪些变化该提交」，但**正文本身仍然没有落脚处**——
+  事件里只有 `beat_displayed`（节拍原文）。要不要把正文存成事件、还是只是可重放的材料，
+  得等 T-render 真接进来、看清正文的用途之后再定，别现在猜。
 - **删除会话可能留下孤儿文件**：`delete_session` 先删引用再删文件，若文件仍被别处占用
   （杀不掉的句柄、权限不足），引用没了而 `.ifworld` 留在 `worlds/` 下。它不会再出现在任何列表里，
   但也不会被自动清理——需要一个「整理世界文件」的入口【后续】。
+- **`if-pipeline` 里几处语义选择还没被文档裁定**（改动前先看这里，别当 bug 顺手改）：
+  - `resolve` 里 `fact_set` 的 `Visibility` 只按 `internal` 分（外在 → `Public`，内在 → `Private`）；
+  - `SceneCommit.completed_at` 目前总是 `Some(...)`（场景在本回合收束），
+    没有表达「演到一半被打断」的路径；
+  - `beats` 逐节拍检查的**背压**（[04 §4.7](04-回合流程.md)）不在这里——那是流式读取侧的事，
+    本模块只看已经切好的片段。
 
 ## 5. 下一阶段工作顺序
 
@@ -289,7 +385,6 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 - ✅ `if-views`：八种视图的状态装配、预算裁剪、可见性判定（`public` / `private` / `secret` + L1 保护期）、稳定指纹。P9 的落点。
 - ✅ `if-policy`：阈值表与一致性严格度、命运骰子（决策键 + 抽样）、分层拓扑排序、观察带与趋势转化、导演评分与场景选择。
 - ✅ 两处 domain 缺口一并补上：`Candidate::key`（稳定决策键，跨世界线不变）、`ResolutionPolicy::SeededCategorical`（docs/06 §1 的互斥类策略原本在枚举里是缺的）。
-- ⚠️ 都还没有调用方，也没接真实 Jev——它们只被单元测试覆盖。
 
 ### 已完成：世界资产持久化（`library.db`）
 
@@ -317,29 +412,45 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
   抽出 `if-app::slug`（保留 CJK），两个调用方共用。
 - ⚠️ 播种**不猜语义**：只有确定性搬运，不判断条目是事实还是氛围；`{{user}}` 也还没处理（D14，
   见 [10 §7.1](10-世界创建与导入.md)）。报告里会把这些列出来，而不是默默做掉。
-- ✅ **真机已验收**：建会话 → 重启 → 会话还在（`4c182c5`）。删除会话与世界文件清理、
-  「IF → 裁定卡 → 确认」这两条**代码已接、真机待确认**（见 §3 的首次游玩流程 5–6 步）。
+
+### 已完成：`if-pipeline`（一个可提交的 IF 回合）
+
+- ✅ 七个模块全部落地：`context` / `audit` / `candidates` / `scenes` / `beats` / `commit` / `turn`，
+  101 项单测（`cargo test -p if-pipeline`）。
+- ✅ `EventDraft` 从 `if-store` 下沉到 `if-domain`——`if-pipeline` 不该为了写一个草稿而依赖 SQLite
+  （`if-store::EventDraft` 的路径由 re-export 保持不变）。
+- ✅ 世界书激活接进回合（[08 §5](08-视图与世界书.md)）：`context::activate_for_turn` 是它第一个真实调用方。
+- ✅ 回合级端到端重放（TODO 里空着的那条）：同一条世界线在**真实 SQLite** 上跑两遍 → 投影逐字节相同。
+- ✅ 顺手修掉 §3 列的 6 个缺陷，每个都有对应测试钉住。
+- ⚠️ **没有调用方**：Tauri 命令面、agent 任务、前端都还没接。它现在是「库 + 测试」。
 
 ### 下一步（按优先级）
 
-1. **`if-pipeline`：一个可提交的 IF 回合**（**当前最高优先**，也是唯一挡在「真正能玩」前面的东西）：
-   按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
-   逐节拍检查 → Proposed / Observed / Committed 对账。
-   - 裁决与视图两层**已经就绪**（`if-policy` / `if-views`），本阶段要写的是**编排**：
-     任务定义、`IfTaskHost`、工具实现、失败兜底，以及把 Jev 的判定喂进 `Policy::run`。
-   - **第一版先用 Judge stub + scripted provider 把全流程跑通**，再接真实 LLM/Jev——
-     这样不消耗真实额度也能验证回合合同。
-   - 世界书激活（[08 §5](08-视图与世界书.md)）也在这一阶段接上：条目**已经落进投影**，
-     只是编译视图时还没有去用它们（关键词 / 常驻 / 概率 / 递归深度 2 / 预算裁剪）。
-   - 顺手补上 TODO 里那条空着的**回合级端到端重放**：同一事件序列 + 同一裁决 → 同一个投影。
-2. **IF 导图 / 世界线面板接投影**：前端目前只重建了角色 / 世界观 / 设定条目；
+1. **把 `if-pipeline` 接上一个司机**（**当前最高优先**，也是唯一挡在「真正能玩」前面的东西）：
+   写五个 agent 任务并接进 `if-app::world_worker`，让「确认裁定卡」之后真的推进一步。
+   - **T-impact**：从「已锁定的 IF + 当前投影」提出候选（行为 / 世界 / 感知 / 互斥组）。
+     产出直接喂 `if_pipeline::candidates::adjudicate`。
+   - **T-scenes**：提场景候选（`SceneProposal`：summary / threads / resolves / erupts / cast）。
+     喂 `scenes::choose`。
+   - **T-plan**：把选中的场景写成 `ScenePlan`。**夹在 `open()` 与 `resolve()` 之间**——
+     这两段不是「调用者忘了合并」，是刻意的，见 [04 §2](04-回合流程.md)。
+   - **T-render**：正文生成 + 按分隔标记切节拍（`BeatProposal`）。喂 `beats::run`。
+   - **T-extract**：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对。
+   - **先用 scripted provider 跑通**（`if-pipeline` 的输入是提议，provider 是不是假的
+     不影响回合合同被验证），再接真实 LLM/Jev——这样不消耗真实额度。
+   - 同时补 Tauri 命令 + 前端：推演卡、按节拍展示、正文落到聊天区。
+2. **T-parse / 语义抽取**：把设定条目里「承重的那一半」抽成命题 / 事实 / 规则草案，
+   接 `q.extract.faithful` 校验（[10 §3.0](10-世界创建与导入.md)、[02 §9.1](02-世界模型.md)）。
+   这也是 `if-lore` 与 `importer/` 迁位的触发条件（[12 §3](12-工程架构.md)）——
+   世界书激活现在住在 `if-pipeline::lore`，该搬过去。
+3. **IF 导图 / 世界线面板接投影**：前端目前只重建了角色 / 世界观 / 设定条目；
    `Story.map` 里的节点还是前端编的，没接世界线与分支。
-3. **T-parse / 语义抽取**：把设定条目里「承重的那一半」抽成命题 / 事实 / 规则草案，
-   接 `q.extract.faithful` 校验（[10 §3.0](10-世界创建与导入.md)、[02 §9.1](02-事件模型.md)）。
-   这也是 `if-lore` 与 `importer/` 迁位的触发条件（[12 §3](12-工程架构.md)）。
 4. **收尾两把小刀**：侧栏把「真实会话」与「演示故事」分到不同分组；
    给个「整理世界文件」入口清理孤儿 `.ifworld`（见 §4）。
-5. ⏸️ **真实文件补测（剩余）**——独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、
+5. **阈值校准**（[06 §2](06-裁决策略.md)，每模板约 40 条标注集）——v1 动工前的必做项。
+   `q.beat.violates_fact` 合规侧余量最小（实测合规 0.21 vs 阈值 0.3），优先。
+   现在 `if-pipeline` 把阈值用在真实路径上了，校准的收益从「理论」变成「每回合都感觉得到」。
+6. ⏸️ **真实文件补测（剩余）**——独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、
    含 V3 扩展字段的真实卡、带装饰器的卡（[13 §6.3](13-酒馆兼容.md)）。
    **用户 2026-09-26 明确说「暂时没空测试，晚点吧」**：别把它当成压着别人的待办，
    也别因为它没做就不敢动关键路径——这几项是**导出产物**，在酒馆里导出一次即可覆盖。
@@ -352,15 +463,17 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 1. 本文件；
 2. `TODO.md`；
 3. [15 v1 范围](15-v1范围.md)；
-4. [13 酒馆兼容](13-酒馆兼容.md)（酒馆适配的字段依据，§0.1 的双方言表是重点）；
-5. [10 世界库与导入](10-世界创建与导入.md) §2 / §7；
-6. [04 回合流程](04-回合流程.md)、[01 IF 规则](01-IF规则.md)、[03 事件与世界线](03-事件与世界线.md)、[06 裁决策略](06-裁决策略.md)、[08 视图与世界书](08-视图与世界书.md)；
-7. 代码：`crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、**`seed.rs`、`session.rs`、`slug.rs`**、
+4. [04 回合流程](04-回合流程.md)（`if-pipeline` 就是它的实现，读它能少走一半弯路）、
+   [06 裁决策略](06-裁决策略.md)、[02 §10–§11](02-世界模型.md)（场景 / 节拍 / 三阶段对账）；
+5. [13 酒馆兼容](13-酒馆兼容.md)（酒馆适配的字段依据，§0.1 的双方言表是重点）；
+6. [10 世界库与导入](10-世界创建与导入.md) §2 / §7；
+7. 代码：**`crates/if-pipeline/src/`（这一轮的主体，先读 `lib.rs` 的模块表再按表读）**、
+   `crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、`seed.rs`、`session.rs`、`slug.rs`、
    `crates/if-store/src/library.rs`、`crates/if-store/src/store.rs`（看 `next_seq` 与 `append_batch`）、
-   `app/src/library.ts`、**`app/src/session.ts`、`app/src/projection.ts`**、`app/src/App.tsx`、
+   `app/src/library.ts`、`app/src/session.ts`、`app/src/projection.ts`、`app/src/App.tsx`、
    `app/src/components/ChatView.tsx`（裁定卡 UI 在这里，`pending_if` 一出现就渲染）；
-8. 若要接回合流程，先读 `crates/if-views/src/`（视图与可见性）与 `crates/if-policy/src/`
+8. 若要改回合编排，先读 `crates/if-views/src/`（视图与可见性）与 `crates/if-policy/src/`
    （阈值表、命运骰子、分层裁决、导演评分）——它们是纯计算层，读起来没有副作用，
    接的时候只需要「喂输入、取输出」。
 
-不要从旧会话推断产品状态；以仓库文档、测试和当前工作区代码为准。真实账号、真实 Jev/LLM 和主观 UI/叙事验收仍由用户执行。
+不要从旧会话推断产品状态；以仓库文档、测试和当前工作区代码为准。真实账号、真实 Jev/LLM 和主观 UI/叙事质量验收仍由用户执行。

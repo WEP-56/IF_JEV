@@ -7,11 +7,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use if_domain::event::{CausedBy, Event, Patch};
+use if_domain::event::{Event, EventDraft, Patch};
 use if_domain::id::{BeatId, EventId, SceneId, TurnId, WorldLineId};
 use if_domain::projection::{Projection, ProjectionAnchor};
 use if_domain::rule::WorldSettings;
-use if_domain::state::DependsOn;
 use if_domain::turn::TurnRecord;
 use if_domain::value::WorldTime;
 use if_domain::worldline::{covers, lineage, ParentRef, WorldLine, WorldLineError, WorldLineKind};
@@ -22,67 +21,6 @@ use crate::schema::{meta_key, SCHEMA};
 
 /// 每隔多少事件存一次投影快照（docs/03 §5）【初始值 200】。
 pub const SNAPSHOT_INTERVAL: u64 = 200;
-
-/// 待写入的事件。`seq` 与 `id` 由 [`Store::append`] 分配，调用方不该自己编。
-#[derive(Clone, Debug)]
-pub struct EventDraft {
-    pub line: WorldLineId,
-    pub world_time: WorldTime,
-    pub narrative_order: Option<u64>,
-    pub payload: Patch,
-    pub caused_by: Vec<CausedBy>,
-    pub depends_on: Vec<DependsOn>,
-    pub turn: TurnId,
-    pub scene: Option<SceneId>,
-    pub beat: Option<BeatId>,
-}
-
-impl EventDraft {
-    pub fn new(
-        line: impl Into<WorldLineId>,
-        turn: impl Into<TurnId>,
-        world_time: WorldTime,
-        payload: Patch,
-    ) -> Self {
-        Self {
-            line: line.into(),
-            world_time,
-            narrative_order: None,
-            payload,
-            caused_by: Vec::new(),
-            depends_on: Vec::new(),
-            turn: turn.into(),
-            scene: None,
-            beat: None,
-        }
-    }
-
-    /// 标记这个事件已经上屏。`beat_displayed` 必须带叙述顺序（docs/03 §4）。
-    pub fn displayed(mut self, narrative_order: u64) -> Self {
-        self.narrative_order = Some(narrative_order);
-        self
-    }
-
-    pub fn caused_by(mut self, caused_by: Vec<CausedBy>) -> Self {
-        self.caused_by = caused_by;
-        self
-    }
-
-    pub fn depending_on(mut self, depends_on: Vec<DependsOn>) -> Self {
-        self.depends_on = depends_on;
-        self
-    }
-
-    pub fn in_scene(mut self, scene: impl Into<SceneId>) -> Self {
-        self.scene = Some(scene.into());
-        self
-    }
-
-    pub fn at_beat(mut self, beat: impl Into<BeatId>) -> Self {
-        self.beat = Some(beat.into());
-        self
-    }
-}
 
 /// 一个世界的事件存储。
 pub struct Store {

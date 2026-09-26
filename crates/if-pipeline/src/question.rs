@@ -80,6 +80,14 @@ pub fn template_id(base: &str) -> String {
     }
 }
 
+/// `q.behavior.occurs@1` → `q.behavior.occurs`。**不带 `@` 的模板名原样返回。**
+///
+/// 与 [`template_id`] 是一对，用在「按模板分派」的地方。注意：拿它处理常量之后
+/// 必须两边都处理——`Q_BEAT_VIOLATES_FACT` 的值是带 `@1` 的，只削一侧等于永不相等。
+pub fn template_name(template: &str) -> &str {
+    template.split('@').next().unwrap_or(template)
+}
+
 /// `q.scene.tension` 的等级（docs/06 §7）：0 明显缓和 → 1 明显升高。
 pub const TENSION_LEVELS: &[&str] = &["明显缓和", "略微缓和", "持平", "略微升高", "明显升高"];
 
@@ -267,10 +275,23 @@ pub fn scene_resolves_thread(index: usize, summary: &str, title: &str, question:
 }
 
 // ---------------------------------------------------------------- 节拍
+//
+// 一个节拍要过的检查**不止一条**：事实、规则、每个在场角色的认知边界、本场景的
+// 禁止项、未批准揭示的秘密，都是「有几条就问几条」。所以这几族问题的键必须带上
+// **被检查对象的身份**——只写 `beat_{index}.fact` 会让第二个事实覆盖第一个，
+// 而 `JudgeRequest::validate` 会因此拒绝整个请求（键重复），
+// 结果是「世界书条目一多，节拍检查就整个跑不起来」。
+//
+// 后缀用被检查对象自己的稳定标识：事实与规则用命题键 / 规则 ID，
+// 禁止项与秘密用**位序**（它们只有文本，没有 ID）。`target` 仍然只是节拍号——
+// 判定记录按它归并。
+//
+// 这些后缀允许出现 `.` 与中文（命题键就是 `c_lin.evidence` 这种形态），
+// 键只是字符串，不参与解析。
 
-pub fn beat_violates_fact(index: u32, fact: &str) -> Question {
+pub fn beat_violates_fact(index: u32, label: &str, fact: &str) -> Question {
     Question {
-        key: format!("beat_{index}.fact"),
+        key: format!("beat_{index}.fact.{label}"),
         template: Q_BEAT_VIOLATES_FACT.to_owned(),
         target: format!("beat_{index}"),
         spec: QuestionSpec::Noul {
@@ -281,9 +302,9 @@ pub fn beat_violates_fact(index: u32, fact: &str) -> Question {
     }
 }
 
-pub fn beat_violates_rule(index: u32, rule: &str, boundaries: &str) -> Question {
+pub fn beat_violates_rule(index: u32, label: &str, rule: &str, boundaries: &str) -> Question {
     Question {
-        key: format!("beat_{index}.rule"),
+        key: format!("beat_{index}.rule.{label}"),
         template: Q_BEAT_VIOLATES_RULE.to_owned(),
         target: format!("beat_{index}"),
         spec: QuestionSpec::Noul {
@@ -312,9 +333,9 @@ pub fn beat_knowledge_leak(index: u32, character: &str, knowledge: &str) -> Ques
     }
 }
 
-pub fn beat_forbidden_resolution(index: u32, forbidden: &str) -> Question {
+pub fn beat_forbidden_resolution(index: u32, ordinal: usize, forbidden: &str) -> Question {
     Question {
-        key: format!("beat_{index}.forbidden"),
+        key: format!("beat_{index}.forbidden.{ordinal}"),
         template: Q_BEAT_FORBIDDEN_RESOLUTION.to_owned(),
         target: format!("beat_{index}"),
         spec: QuestionSpec::Noul {
@@ -328,9 +349,11 @@ pub fn beat_forbidden_resolution(index: u32, forbidden: &str) -> Question {
 /// 未批准揭示的秘密。**问题里可以说秘密**——检查视图本来就是为了查泄露
 /// （docs/08 §1：检查视图含未批准揭示的秘密）；受约束的是叙事视图与否决理由，
 /// 后者不能把秘密说出来（docs/05 §2.5）。
-pub fn beat_reveals_secret(index: u32, secret: &str) -> Question {
+///
+/// 后缀用命题键，所以「一个场景里有三条秘密要查」不会退化成一条。
+pub fn beat_reveals_secret(index: u32, label: &str, secret: &str) -> Question {
     Question {
-        key: format!("beat_{index}.secret"),
+        key: format!("beat_{index}.secret.{label}"),
         template: Q_BEAT_REVEALS_SECRET.to_owned(),
         target: format!("beat_{index}"),
         spec: QuestionSpec::Noul {

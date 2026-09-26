@@ -374,6 +374,80 @@ impl Event {
     }
 }
 
+// ---------------------------------------------------------------- 待写入的事件
+
+/// 待写入的事件。`seq` 与 `id` 由存储层分配，调用方**不该自己编**。
+///
+/// 它住在 `if-domain` 而不是存储层，是因为回合编排（`if-pipeline`）产出的正是这一批草稿，
+/// 而那个 crate 刻意不认识 SQLite。`if-store` 直接 re-export 同一种类型，
+/// 于是「谁产生」与「谁写入」两侧说的是同一个东西（docs/12 §3）。
+///
+/// 与 [`Event`] 的差别只有三样：没有 `id`、没有 `seq`、`narrative_order` 可以稍后再补。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventDraft {
+    pub line: WorldLineId,
+    pub world_time: WorldTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrative_order: Option<u64>,
+    pub payload: Patch,
+    #[serde(default)]
+    pub caused_by: Vec<CausedBy>,
+    #[serde(default)]
+    pub depends_on: Vec<DependsOn>,
+    pub turn: TurnId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beat: Option<BeatId>,
+}
+
+impl EventDraft {
+    pub fn new(
+        line: impl Into<WorldLineId>,
+        turn: impl Into<TurnId>,
+        world_time: WorldTime,
+        payload: Patch,
+    ) -> Self {
+        Self {
+            line: line.into(),
+            world_time,
+            narrative_order: None,
+            payload,
+            caused_by: Vec::new(),
+            depends_on: Vec::new(),
+            turn: turn.into(),
+            scene: None,
+            beat: None,
+        }
+    }
+
+    /// 标记这个事件已经上屏。`beat_displayed` 必须带叙述顺序（docs/03 §4）。
+    pub fn displayed(mut self, narrative_order: u64) -> Self {
+        self.narrative_order = Some(narrative_order);
+        self
+    }
+
+    pub fn caused_by(mut self, caused_by: Vec<CausedBy>) -> Self {
+        self.caused_by = caused_by;
+        self
+    }
+
+    pub fn depending_on(mut self, depends_on: Vec<DependsOn>) -> Self {
+        self.depends_on = depends_on;
+        self
+    }
+
+    pub fn in_scene(mut self, scene: impl Into<SceneId>) -> Self {
+        self.scene = Some(scene.into());
+        self
+    }
+
+    pub fn at_beat(mut self, beat: impl Into<BeatId>) -> Self {
+        self.beat = Some(beat.into());
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -33,4 +33,8 @@ pub use library::{
     WorldAsset, MANUAL_SOURCE,
 };
 pub use schema::meta_key;
-pub use store::{EventDraft, Store, SNAPSHOT_INTERVAL};
+pub use store::{Store, SNAPSHOT_INTERVAL};
+
+/// 待写入的事件草稿住在 `if-domain`（回合编排也产出它），这里原样转出，
+/// 让 `if_store::EventDraft` 这个路径继续成立。
+pub use if_domain::event::EventDraft;
