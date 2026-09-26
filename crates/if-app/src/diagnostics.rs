@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use if_agent::{build_provider, Block, ChatMessage, PromptContext, ProviderEvent, ProviderSettings, StreamTerminal, ToolSpec};
+use if_agent::{build_provider, Block, ChatMessage, PromptContext, Provider, ProviderEvent, ProviderSettings, StreamTerminal, ToolSpec};
 use if_domain::{JudgmentOutput, ViewKind, ViewRef};
 use if_judge::{CompiledView, JevJudge, Judge, JudgeError, JudgeRequest, LlmJudge, Question};
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,15 @@ pub fn parse_if_with_model(settings: ProviderSettings, input: String, cancel: Ar
         return Err("结构模型尚未配置，无法进行 IF 解析".into());
     }
     let provider = build_provider(settings);
+    parse_if_with(provider.as_ref(), input, cancel)
+}
+
+/// 真正干活的那一层：只认 `Provider`，与「provider 从哪来」解耦。
+///
+/// 拆出来是为了能测**整条路径**（发问 → 读 `tool_uses()` → 补齐 `input` → 反序列化）：
+/// 真机上炸的正是这一段，只测 `draft_from_tool_args` 抓不到它。测试用
+/// `if_agent::provider::scripted::ScriptedProvider`，不联网、不花额度。
+fn parse_if_with(provider: &dyn Provider, input: String, cancel: Arc<AtomicBool>) -> Result<IfDraft, String> {
     let prompt = PromptContext { system_sections: vec!["你是 IF 世界的结构解析器。忠实解释用户输入，允许自然语言，不要擅自添加后果。必须调用 submit_if_draft。".into()], messages: vec![ChatMessage::user_text(input.clone())] };
     let mut events = |_event: ProviderEvent| {};
     let output = match provider.stream_turn(&prompt, &[if_draft_tool()], &mut events, &cancel) {
@@ -241,6 +250,11 @@ fn describe(e: JudgeError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use if_agent::provider::scripted::{ScriptedProvider, ScriptedTurn};
+
+    fn never() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
 
     /// 模型**按 schema 如实返回**的一份参数（注意：没有 `input`）。
     fn schema_clean_args() -> Value {
@@ -325,5 +339,40 @@ mod tests {
         // 非必填字段会逼调用方处理「模型没给」的分支，而 `additionalProperties: false`
         // 的 strict 模式要求两者一致——所以这里要求 properties 与 required 完全同一集合。
         assert_eq!(properties.len(), required.len(), "schema 里不应有非必填字段");
+    }
+
+    // ---- 整条模型路径：发问 → 读 tool_uses → 补齐 input → 反序列化 ----
+    // 真机上炸的就是这一段。只测 `draft_from_tool_args` 覆盖不到「调用方怎么拿到 args」，
+    // 所以这里真的走一遍 provider。
+
+    #[test]
+    fn the_whole_model_path_turns_a_tool_call_into_a_draft() {
+        let provider = ScriptedProvider::new([ScriptedTurn::tool("submit_if_draft", schema_clean_args())]);
+        let draft = parse_if_with(&provider, "IF 所有人从此无法说谎".into(), never()).expect("真机上的主路径");
+        assert_eq!(draft.input, "IF 所有人从此无法说谎");
+        assert_eq!(draft.core, "所有人无法说谎");
+        assert_eq!(provider.prompts().len(), 1, "应当恰好发问一次");
+    }
+
+    /// 模型只说了话、没调工具 → 报「未调用」，而不是拿一个空 args 去反序列化。
+    #[test]
+    fn a_model_that_never_calls_the_tool_says_so() {
+        let provider = ScriptedProvider::new([ScriptedTurn::text("我觉得这条更像规则。")]);
+        let error = parse_if_with(&provider, "IF x".into(), never()).unwrap_err();
+        assert!(error.contains("submit_if_draft"), "{error}");
+    }
+
+    /// 上游挂了就把上游的报错透出去——不要伪装成「草案无效」，那会把排查方向带偏。
+    #[test]
+    fn a_provider_failure_is_not_reported_as_a_bad_draft() {
+        let provider = ScriptedProvider::new([ScriptedTurn::Error { message: "上游 502".into(), retryable: true }]);
+        assert_eq!(parse_if_with(&provider, "IF x".into(), never()).unwrap_err(), "上游 502");
+    }
+
+    /// 已经取消的任务不该再解析结果。
+    #[test]
+    fn a_cancelled_run_stops_before_the_draft_is_built() {
+        let provider = ScriptedProvider::new([ScriptedTurn::tool("submit_if_draft", schema_clean_args())]);
+        assert_eq!(parse_if_with(&provider, "IF x".into(), Arc::new(AtomicBool::new(true))).unwrap_err(), "IF 解析已取消");
     }
 }
