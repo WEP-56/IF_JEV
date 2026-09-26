@@ -1,7 +1,7 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后）。此时 `main` = **`f5cae26`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
+> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后；当晚补上 IF 提交缺陷的修复）。此时 `main` = **`725fff4`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
 
 ## 0. 冷启动速览（先读这一节）
 
@@ -20,7 +20,7 @@ T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    413 passed / 0 failed
+cargo test --workspace                    417 passed / 0 failed
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 342.90 kB）
@@ -33,8 +33,8 @@ cd app && npm run build                   通过（1916 模块 / 342.90 kB）
 | 导入世界 → 关掉再打开，资产还在；重导不翻倍 | ✅ 已真机验收 |
 | 选世界建会话 → 看到播种简报与投影出来的世界 | ✅ 已真机验收 |
 | 建会话 → **重启 → 会话还在**（侧栏列表） | ✅ 已真机验收（`4c182c5` 修的） |
-| 删会话 → 重启不回来、世界文件一并清掉 | ⬜ 代码已接，真机待顺手确认 |
-| 输入 `IF xxxx` → 落裁定卡 → 确认写进事件日志 | ⬜ 代码已接，真机待确认 |
+| 删会话 → 重启不回来、世界文件一并清掉 | ✅ 已真机验收（2026-09-26） |
+| 输入 `IF xxxx` → 落裁定卡 → 确认写进事件日志 | ⬜ 真机验过、**当场报错**，缺陷已修（见 §3）；**待复验** |
 | 真实 Jev / LLM 的连通性与 smoke 判定（`test_llm` / `test_judge`） | ✅ 已真机验过，见 [14](14-Jev实测.md) |
 | 三种剩余的真实方言（V3 `assets` / `@@` 装饰器 / 独立 `lorebook_v3`） | ⬜ 用户已明确推迟（见 §4） |
 | 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **还没有界面入口**（见 §5） |
@@ -111,6 +111,7 @@ crate 划分见 [12 §3](12-工程架构.md)。`if-lore` **尚未创建**（酒�
 - `open_session(session_id)`：从 `world_sessions` 找回 `.ifworld` 重新打开，**不重新播种**。
 - `delete_session(session_id)`：移出世界库 + 删掉世界文件（含 `-wal` / `-shm`）。
   删的若是当前打开的世界，**先关掉它**（Windows 上打开着的文件删不掉）。
+  ✅ **2026-09-26 真机验收可用**。
 - `open_world(path)` / `close_world` / `get_world_snapshot`；`world://opened` / `world://closed` 事件。
 - **没有 `create_world` 命令**——[10 §3](10-世界创建与导入.md) 要求新建会话必须先选世界；
   「空世界」走世界库的「手动撰写」（那也是一个资产，只是 payload 里没有角色与设定）。
@@ -141,9 +142,32 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 - **前端 UI 已接**（`app/src/components/ChatView.tsx`）：`pending_if` 一出现就渲染卡片
   （类型 / 时间锚点 / 锁定建议 / 核心命题 / 范围 / 警告 / 冲突），措辞可编辑，
   `取消` / `确认并锁定` / `按重释确认` 三个动作都已接线。
-  → **「输入 `IF xxxx` → 落卡 → 确认写进事件日志」这条现在就能在真机上走通**，
-  前提是配好了结构模型（`submit_if_model` 会调它做预解析）。
+  → ⚠️ 但「输入 `IF xxxx` → 落卡 → 确认」这一段**当时走不通**：提交即报
+  「结构模型返回的 IF 草案无效：missing field `input`」。原因与修法见下面那条缺陷记录。
   前端用的是 `submit_if_model`；确定性的 `submit_if`（不调模型）只有命令、没有 UI 入口。
+
+**修掉的真机缺陷：工具 schema 与 `IfDraft` 不对齐**（2026-09-26，`diagnostics.rs`）
+
+`IfDraft::input`（**用户的原话**）是必填字段，`world_worker` 拿它填
+`record.input` 与 `IfInjection.input`——裁定卡上显示的就是这一句。但 `submit_if_draft`
+的 schema 既没声明 `input`、也没把它列进 `required`，模型**照 schema 如实返回**，
+`serde_json::from_value::<IfDraft>` 于是当场失败，用户拿到一句
+「missing field `input`」——只有开发者看得懂，也不知道能做什么。
+
+修法**不是**把 `input` 加进 schema 让模型复述（那会让裁定卡显示模型改写过的句子），
+而是**由引擎回填**：`diagnostics::draft_from_tool_args` 在反序列化前塞进用户原话，
+模型多嘴回了 `input` 也一律覆盖；报错同时列出「模型实际返回了哪些字段」，
+并提示可以重试或换更严格的结构模型。
+
+护栏是一条**结构对齐测试**（`diagnostics::tests`）：
+`IfDraft` 的每个字段要么在工具 schema 的 `properties` 里且 `required`，
+要么在豁免表里（`input` = 引擎回填，`rewrite_candidates` = 带 serde default、只有确定性
+解析器会产）。**以后给 `IfDraft` 加字段而忘了同步 schema，它会变红**——
+再不会退化成真机上的一句「IF 提交失败」。
+
+> 教训（与 `if-pipeline` 那 6 个缺陷同类）：**工具 schema 是一份契约，但它不被任何
+> 运行时代码校验**——`parse_if_with_model` 绕开 agent loop 直接读 `tool_uses()`，
+> 没人拿 schema 去验模型的返回。契约与 Rust 结构体只能靠测试对齐。
 
 解析与导入（确定性、无网络）：
 
@@ -255,7 +279,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 413 个测试通过
+cargo test --workspace              # 当前 417 个测试通过
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
