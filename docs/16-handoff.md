@@ -1,7 +1,7 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后；当晚补上 IF 提交缺陷的修复）。此时 `main` = **`000a471`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
+> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后；当晚连续修掉 IF 提交流程的两组缺陷：工具 schema 与结构体不对齐、锁定等级与作用范围被交给模型猜）。此时 `main` = **`5aeba3c`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
 
 ## 0. 冷启动速览（先读这一节）
 
@@ -20,7 +20,7 @@ T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    421 passed / 0 failed
+cargo test --workspace                    427 passed / 0 failed
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 342.90 kB）
@@ -179,27 +179,38 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 > 另一条：**只测纯函数不够**。`draft_from_tool_args` 从第一天起就是对的，炸的是
 > 「调用方怎么拿到 args」——所以补测试时补的是整条路径，不是再给纯函数加断言。
 
-**已知偏差（尚未修）：`suggested_lock` / `scope` 被交给模型猜**
+**同一张卡暴露的第二组缺陷（已修：`suggested_lock` / `scope` / 卡片枚举）**
 
-同一次真机里，`IF 所有人从此无法说谎` 的卡片显示 `rule · now · 锁定 L3`、`范围 individual`。
-两个字段都与 docs/01 不符：
+真机上 `IF 所有人从此无法说谎` 显示的卡片是 `rule · now · 锁定 L3`、`范围 individual`。
+两处都与 docs/01 不符，另有第三处是展示问题：
 
 | 字段 | 模型给的 | docs/01 规定 | 依据 |
 |---|---|---|---|
 | `suggested_lock` | `L3` | **`L2`（规则型）** | §6 锁定等级表——「kind → lock」是**全函数**，文档举的例子就是这句话 |
 | `scope` | `individual` | 全局（`global`） | §5 作用范围；「所有人」是确定性线索 |
+| 卡片渲染 | `rule` / `now` / `individual` | 中文 | 裸英文枚举直接露给用户 |
 
-- `suggested_lock` **没有理由问模型**：docs/01 §6 是一张确定性映射表，确定性解析器
-  `if_parser::parse` 早就按它实现了（规则型 → `L2`），模型路径却让模型自己猜。
-  这不是「两种做法都行」——`L2` 与 `L3` 在冲突让位时规则不同（§6「谁能改变」列）。
-- `scope` 还有第二个问题：`injection_from_draft` 只认字符串 `"global"`，其余一律塌成
-  `Individual`——而 `IfScope` 明明有 `Individual / Group / Region / Global` 四档
-  （docs/01 §5 定义的就是四级），**中间两档永远拿不到**。
-- 附带一处展示问题：卡片上 `kind` / `time_anchor` / `scope` 是**裸英文枚举**
-  （`ChatView.tsx` 只给 `lock` 加了「锁定」前缀），`rule` 与 `now` 直接露给用户。
+三处一并修掉，**方向都是「把引擎有资格决定的东西从模型手里拿回来」**：
 
-> 这三处**没动**——真机验收只报「可用」，改它们要碰 `if_parser`/`diagnostics` 的职责边界
-> 与 `IfScope` 映射，属于新的一刀。改之前先问 WEP。
+1. **`suggested_lock` 改由 `kind` 推导**：新增 `ParsedIfKind::default_lock()`
+   （docs/01 §6 的表一字不差地变成代码，确定性解析器与模型路径**共用同一个来源**），
+   字段从工具 schema 里删掉——模型连填的地方都没有。
+   `L2` 与 `L3` 在冲突让位时规则不同，这不是「两种做法都行」。
+2. **`scope` 补齐四档**：`injection_from_draft` 原来只认 `"global"`、其余全塌成
+   `Individual`，`Group` / `Region` **永远拿不到**；现在四档都在，认不出的字符串
+   按最窄的个体处理（宁可少认影响范围，也不要把局部 IF 当成世界规则去冲突）。
+   确定性解析器也不再产自造的 `individual_or_local`，只产 `IfScope` 认得的字符串。
+3. **卡片枚举中文化**（`ChatView.tsx`）：类型 / 时间锚点 / 范围 / 状态都加了标签；
+   **认不出的值原样显示**——后端加了新枚举而前端忘了同步时，那是唯一的提示。
+
+更根本的一处：**新增 `ModelDraft`，把「模型该填什么」变成一个 Rust 结构**。
+`input` / `suggested_lock` / `rewrite_candidates` 三样归引擎，于是那条不变式从
+「逐字段对齐 + 豁免表」升级为**集合相等**——`schema.properties ≡ ModelDraft 字段`，
+没有豁免、没有解释空间。另外给每个字段补了 `description`、给 `kind` / `time_anchor` /
+`scope` 补了 `enum` 说明：**第一版一个说明都没有，模型只能猜**，这才有上面那两处错。
+
+> 教训（与上面同类）：**模型答错的字段，先问「这事该不该问模型」**。
+> 这两处都不是模型不听话，是引擎把确定性的事外包了出去。
 
 解析与导入（确定性、无网络）：
 
@@ -311,7 +322,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 421 个测试通过
+cargo test --workspace              # 当前 427 个测试通过
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
