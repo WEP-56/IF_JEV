@@ -18,7 +18,11 @@ tauri-build = { version = "2", features = [] }
 if-agent.workspace = true
 if-domain.workspace = true
 if-judge.workspace = true
+if-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# PNG 角色卡内嵌 JSON 的解码与 zTXt / iTXt 解压（两者都已在 Cargo.lock 中）。
+base64 = "0.22"
+flate2 = "1"
 tauri = { version = "2", features = [] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }

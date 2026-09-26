@@ -17,6 +17,8 @@ interface Props {
   canForward: boolean;
   onBack: () => void;
   onForward: () => void;
+  nativeWorld?: { label: string; head_seq: number; event_count: number } | null;
+  nativeWorldStatus?: 'checking' | 'open' | 'empty' | 'error';
 }
 
 export default function TitleBar(p: Props) {
@@ -80,6 +82,12 @@ export default function TitleBar(p: Props) {
             )}
           </div>
         ))}
+      </div>
+
+      <div className="ml-3 flex min-w-0 items-center gap-1.5 text-[11px] text-muted" title={p.nativeWorld?.label ?? '尚未打开 Rust 世界'}>
+        <span className={cn('h-1.5 w-1.5 rounded-full', p.nativeWorldStatus === 'open' ? 'bg-emerald-500' : p.nativeWorldStatus === 'error' ? 'bg-rose-500' : 'bg-muted/60')} />
+        <span className="max-w-40 truncate">{p.nativeWorldStatus === 'open' ? p.nativeWorld?.label : p.nativeWorldStatus === 'checking' ? '连接世界…' : '演示世界'}</span>
+        {p.nativeWorldStatus === 'open' && <span className="tabular-nums text-muted/70">#{p.nativeWorld?.head_seq ?? 0}</span>}
       </div>
 
       <div

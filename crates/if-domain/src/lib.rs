@@ -55,9 +55,9 @@ pub use rule::{
 pub use state::{Belief, Claim, DependsOn, Fact, Observation, ObservationTarget, Sincerity};
 pub use subject::{Proposition, PropositionKind, Subject, SubjectKind, Tier, ValueType};
 pub use turn::{
-    Candidate, CandidateShape, Judgment, JudgmentOutput, JudgmentUsage, Primitive, Resolution,
-    ResolutionOutcome, ResolutionPolicy, TaskFinish, TaskRecord, ToolCallRecord, TurnKind,
-    TurnMetrics, TurnRecord, ViewKind, ViewRef,
+    Candidate, CandidateShape, IfCardStatus, IfRulingCard, Judgment, JudgmentOutput,
+    JudgmentUsage, Primitive, Resolution, ResolutionOutcome, ResolutionPolicy, TaskFinish,
+    TaskRecord, ToolCallRecord, TurnKind, TurnMetrics, TurnRecord, ViewKind, ViewRef,
 };
 pub use value::{Lock, Value, Visibility, WorldTime};
 pub use worldline::{

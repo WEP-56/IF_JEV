@@ -1,4 +1,4 @@
-import type { Story, Settings, Character, World, MapNode, Message } from './types';
+import type { Story, Settings, Character, World, MapNode, Message, WorldAsset } from './types';
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -425,6 +425,18 @@ export const initialStories: Story[] = [
   ),
 ];
 
+/** World assets are reusable inputs; sessions remain separate Story records. */
+export const initialWorldAssets: WorldAsset[] = initialStories.map((story) => ({
+  id: `world-${story.id}`,
+  name: story.world.name,
+  genre: story.world.genre,
+  summary: story.world.summary,
+  source: 'demo',
+  characters: story.characters,
+  world: story.world,
+  updated: story.updated,
+}));
+
 export const defaultSettings: Settings = {
   theme: 'dark',
   accent: '#3b82f6',
@@ -549,7 +561,7 @@ export function newStory(): Story {
       genre: '待定',
       era: '—',
       day: 0,
-      summary: '世界尚未成形。注入第一个事件，JEV 将据此生成世界底层状态。',
+      summary: '世界资产尚未选择。请先从世界库导入或撰写一个世界，再创建会话。',
       rules: [],
       vars: [],
       factions: [],
@@ -561,8 +573,8 @@ export function newStory(): Story {
         id: uid(),
         role: 'narrator',
         time: now(),
-        content: '这里还什么都没有。\n\n给我一个起点吧。',
-        choices: ['IF 一座海边小镇的所有人同时失去了记忆', 'IF 世界将会连续下 30 天暴雨', 'IF 1920 年的上海出现了一台智能手机'],
+        content: '这里还没有会话。\n\n先选择一个世界，故事才会开始。',
+        choices: [],
       },
     ],
   };

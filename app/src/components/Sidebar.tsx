@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Search, SquarePen, Settings as SettingsIcon, Pin, MoreHorizontal, Trash2, Copy, Pencil, Sun, Moon, PlusCircle, X,
+  Search, SquarePen, Settings as SettingsIcon, Pin, MoreHorizontal, Trash2, Copy, Pencil, Sun, Moon, PlusCircle, X, BookOpen,
 } from 'lucide-react';
 import type { Story } from '../types';
 import { cn } from '../utils/cn';
@@ -11,6 +11,7 @@ interface Props {
   dark: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onLibrary: () => void;
   onSettings: () => void;
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
@@ -70,6 +71,10 @@ export default function Sidebar(p: Props) {
           <SquarePen size={16} className="text-fg/70" />
           新故事
           <PlusCircle size={15} className="ml-auto text-muted opacity-0 group-hover:opacity-100" />
+        </button>
+        <button onClick={p.onLibrary} className={row}>
+          <BookOpen size={16} className="text-fg/70" />
+          世界库
         </button>
         {searching ? (
           <div className="flex items-center gap-2.5 rounded-lg bg-subtle px-2.5 py-[7px]">

@@ -4,8 +4,11 @@
 //! 随 `if-pipeline` 一起接入。
 
 mod diagnostics;
+mod if_parser;
+mod importer;
 mod secrets;
 mod settings;
+mod world_worker;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,13 +19,16 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use diagnostics::{JudgeTestInput, JudgeTestResult, LlmTestResult};
+use if_parser::IfDraft;
 use secrets::{KeySlot, KeySource};
 use settings::{AppSettings, Slot};
+use world_worker::{WorldSnapshot, WorldWorker};
 
 struct AppState {
     settings: Mutex<AppSettings>,
     settings_path: PathBuf,
     runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    world: Mutex<Option<WorldWorker>>,
 }
 
 impl AppState {
@@ -162,10 +168,148 @@ async fn test_judge(
 }
 
 #[tauri::command]
+async fn parse_if_model(
+    state: State<'_, AppState>,
+    run_id: String,
+    input: String,
+) -> Result<IfDraft, String> {
+    let provider = slot_with_key(&state.snapshot(), Slot::Structure);
+    let cancel = state.start_run(&run_id);
+    let result = blocking(move || diagnostics::parse_if_with_model(provider, input, cancel)).await;
+    state.end_run(&run_id);
+    result
+}
+
+#[tauri::command]
+async fn submit_if_model(
+    state: State<'_, AppState>,
+    run_id: String,
+    input: String,
+) -> Result<WorldSnapshot, String> {
+    let provider = slot_with_key(&state.snapshot(), Slot::Structure);
+    let cancel = state.start_run(&run_id);
+    let draft_result = blocking(move || diagnostics::parse_if_with_model(provider, input, cancel)).await;
+    let draft = match draft_result {
+        Ok(draft) => draft,
+        Err(error) => { state.end_run(&run_id); return Err(error); }
+    };
+    let world = state.world.lock().expect("world state poisoned");
+    let worker = world.as_ref().ok_or_else(|| "当前没有打开的世界".to_owned())?;
+    let result = worker.submit_if_draft(draft);
+    state.end_run(&run_id);
+    result
+}
+
+#[tauri::command]
 fn cancel_run(state: State<'_, AppState>, run_id: String) {
     if let Some(flag) = state.runs.lock().expect("runs poisoned").get(&run_id) {
         flag.store(true, Ordering::Relaxed);
     }
+}
+
+#[tauri::command]
+async fn create_world(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    label: String,
+) -> Result<WorldSnapshot, String> {
+    let label = label.trim().to_owned();
+    if label.is_empty() {
+        return Err("世界名称不能为空".into());
+    }
+    let worlds_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("worlds");
+    std::fs::create_dir_all(&worlds_dir).map_err(|e| format!("创建世界目录失败：{e}"))?;
+    let path = world_worker::new_world_path(&worlds_dir, &label);
+    let worker = WorldWorker::create(path, label)?;
+    let snapshot = worker.snapshot()?;
+    *state.world.lock().expect("world state poisoned") = Some(worker);
+    let _ = app.emit("world://opened", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn open_world(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<WorldSnapshot, String> {
+    let worker = WorldWorker::open(PathBuf::from(path))?;
+    let snapshot = worker.snapshot()?;
+    *state.world.lock().expect("world state poisoned") = Some(worker);
+    let _ = app.emit("world://opened", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn submit_if(state: State<'_, AppState>, input: String) -> Result<WorldSnapshot, String> {
+    let world = state.world.lock().expect("world state poisoned");
+    world
+        .as_ref()
+        .ok_or_else(|| "当前没有打开的世界".to_owned())?
+        .submit_if(input)
+}
+
+#[tauri::command]
+fn confirm_if(state: State<'_, AppState>, input: Option<String>) -> Result<WorldSnapshot, String> {
+    let world = state.world.lock().expect("world state poisoned");
+    world
+        .as_ref()
+        .ok_or_else(|| "当前没有打开的世界".to_owned())?
+        .confirm_if(input)
+}
+
+#[tauri::command]
+fn reinterpret_if(state: State<'_, AppState>) -> Result<WorldSnapshot, String> {
+    let world = state.world.lock().expect("world state poisoned");
+    world
+        .as_ref()
+        .ok_or_else(|| "当前没有打开的世界".to_owned())?
+        .reinterpret_if()
+}
+
+#[tauri::command]
+fn cancel_if(state: State<'_, AppState>) -> Result<WorldSnapshot, String> {
+    let world = state.world.lock().expect("world state poisoned");
+    world
+        .as_ref()
+        .ok_or_else(|| "当前没有打开的世界".to_owned())?
+        .cancel_if()
+}
+
+#[tauri::command]
+fn parse_if(input: String) -> Result<IfDraft, String> {
+    if_parser::parse(&input)
+}
+
+#[tauri::command]
+fn import_world_json(input: String) -> Result<importer::ImportedWorld, String> {
+    importer::parse_json(&input)
+}
+
+/// 从文件导入：前端把文件读成 base64 传进来，这里自动识别 PNG 或 JSON。
+#[tauri::command]
+fn import_world_file(file_name: String, data_base64: String) -> Result<importer::ImportedWorld, String> {
+    let bytes = importer::decode_base64(&data_base64)?;
+    importer::parse_bytes(&bytes, Some(&file_name))
+}
+
+#[tauri::command]
+fn close_world(app: tauri::AppHandle, state: State<'_, AppState>) {
+    state.world.lock().expect("world state poisoned").take();
+    let _ = app.emit("world://closed", ());
+}
+
+#[tauri::command]
+fn get_world_snapshot(state: State<'_, AppState>) -> Result<WorldSnapshot, String> {
+    let world = state.world.lock().expect("world state poisoned");
+    world
+        .as_ref()
+        .ok_or_else(|| "当前没有打开的世界".to_owned())?
+        .snapshot()
 }
 
 pub fn run() {
@@ -174,7 +318,12 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let settings_path = dir.join("settings.json");
             let settings = AppSettings::load(&settings_path);
-            app.manage(AppState { settings: Mutex::new(settings), settings_path, runs: Mutex::new(HashMap::new()) });
+            app.manage(AppState {
+                settings: Mutex::new(settings),
+                settings_path,
+                runs: Mutex::new(HashMap::new()),
+                world: Mutex::new(None),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -184,7 +333,20 @@ pub fn run() {
             test_llm,
             probe_jev,
             test_judge,
+            parse_if_model,
+            submit_if_model,
             cancel_run,
+            create_world,
+            open_world,
+            submit_if,
+            confirm_if,
+            reinterpret_if,
+            cancel_if,
+            parse_if,
+            import_world_json,
+            import_world_file,
+            close_world,
+            get_world_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("IF 启动失败");

@@ -81,6 +81,8 @@ export interface MapNode {
 
 export interface Story {
   id: string;
+  /** Reusable world asset selected when this session was created. */
+  worldId?: string;
   title: string;
   genre: string;
   color: string;
@@ -92,6 +94,17 @@ export interface Story {
   world: World;
   map: MapNode[];
   tokens: number;
+}
+
+export interface WorldAsset {
+  id: string;
+  name: string;
+  genre: string;
+  summary: string;
+  source: 'demo' | 'written' | 'imported';
+  characters: Character[];
+  world: World;
+  updated: string;
 }
 
 export interface Settings {

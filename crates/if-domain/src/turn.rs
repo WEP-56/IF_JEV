@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::event::IfInjection;
 use crate::id::{
     CandidateId, EventId, JudgmentId, PropositionId, SubjectId, TurnId, WorldLineId,
 };
@@ -297,6 +298,9 @@ pub struct TurnRecord {
     /// 用户的原始输入（IF / 观测目标）。继续回合没有输入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
+    /// IF 裁定卡。卡片先持久化为 pending，确认后才会产生 if_injected 事件。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ruling_card: Option<IfRulingCard>,
     /// 回合开始时所在的世界时间，供回溯判定「写入过去」。
     pub started_at: WorldTime,
     #[serde(default)]
@@ -323,6 +327,7 @@ impl TurnRecord {
             line: line.into(),
             kind,
             input: None,
+            ruling_card: None,
             started_at,
             tasks: Vec::new(),
             candidates: Vec::new(),
@@ -342,6 +347,44 @@ impl TurnRecord {
     pub fn judgment(&self, id: &JudgmentId) -> Option<&Judgment> {
         self.judgments.iter().find(|j| &j.id == id)
     }
+}
+
+/// 裁定卡生命周期。默认不自动确认（docs/01 §9.2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfCardStatus {
+    Pending,
+    Confirmed,
+    Cancelled,
+}
+
+/// IF 回合的最小可持久化裁定卡。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IfRulingCard {
+    pub turn: TurnId,
+    pub status: IfCardStatus,
+    pub injection: IfInjection,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// 本地确定性预检发现的潜在冲突。语义模型尚未介入时只做提示，不自动覆盖事实。
+    #[serde(default)]
+    pub conflicts: Vec<IfConflict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_event: Option<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IfConflict {
+    pub event: EventId,
+    pub existing_core: String,
+    pub lock: crate::value::Lock,
+    pub reason: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfConflictResolution {
+    Reinterpret,
 }
 
 #[cfg(test)]

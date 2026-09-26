@@ -6,12 +6,20 @@ import ChatView from './components/ChatView';
 import RightPanel from './components/RightPanel';
 import SettingsModal from './components/SettingsModal';
 import type { Character, Message, Settings, Story } from './types';
-import { defaultSettings, initialStories, mockJev, mockNarration, newStory, now, uid } from './data';
+import { defaultSettings, initialStories, initialWorldAssets, mockJev, mockNarration, newStory, now, uid } from './data';
+import type { WorldAsset } from './types';
+import WorldLibrary from './components/WorldLibrary';
+import WorldPicker from './components/WorldPicker';
+import WorldImportPreview from './components/WorldImportPreview';
+import { fileToBase64, toWorldAsset, type ImportedWorld } from './import';
 
 declare global {
   interface Window {
     __TAURI__?: {
       core?: { invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T> };
+      event?: {
+        listen: <T>(event: string, handler: (payload: { payload: T }) => void) => Promise<() => void>;
+      };
       window?: {
         getCurrentWindow: () => {
           minimize: () => Promise<void>;
@@ -23,6 +31,33 @@ declare global {
     };
   }
 }
+
+type NativeWorldSnapshot = {
+  path: string;
+  label: string;
+  active_line_id: string;
+  head_seq: number;
+  event_count: number;
+  projection?: { injections?: unknown[] };
+  pending_if?: IfRulingCard;
+};
+
+type IfRulingCard = {
+  turn: string;
+  status: 'pending' | 'confirmed' | 'cancelled';
+  injection: {
+    input: string;
+    kind: string;
+    core: string;
+    time_anchor: string;
+    scope: string;
+    lock: string;
+    digestion?: string;
+    non_commitments: string[];
+  };
+  warnings: string[];
+  conflicts?: { event: string; existing_core: string; lock: string; reason: string }[];
+};
 
 const LS_KEY = 'if-preview-settings-v2';
 
@@ -47,17 +82,68 @@ function loadSettings(): Settings {
 
 export default function App() {
   const [stories, setStories] = useState<Story[]>(initialStories);
+  const [worlds, setWorlds] = useState<WorldAsset[]>(initialWorldAssets);
   const [activeId, setActiveId] = useState(initialStories[0].id);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [worldLibraryOpen, setWorldLibraryOpen] = useState(false);
+  const [worldPickerOpen, setWorldPickerOpen] = useState(false);
+  /** 导入解析结果，等待用户审阅确认后才进入世界库（docs/10 §7）。 */
+  const [importPreview, setImportPreview] = useState<{ imported: ImportedWorld; asset: WorldAsset } | null>(null);
+  const [importNotice, setImportNotice] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [nativeWorld, setNativeWorld] = useState<NativeWorldSnapshot | null>(null);
+  const [nativeWorldStatus, setNativeWorldStatus] = useState<'checking' | 'open' | 'empty' | 'error'>('checking');
   const timers = useRef<number[]>([]);
+  const pendingNativeMessageId = useRef<string | null>(null);
 
   const story = stories.find((s) => s.id === activeId) ?? stories[0];
   const [dark, setDark] = useState(true);
   const [searchSignal, setSearchSignal] = useState(0);
+
+  useEffect(() => {
+    let disposed = false;
+    const load = async () => {
+      if (!window.__TAURI__?.core?.invoke) {
+        setNativeWorldStatus('empty');
+        return;
+      }
+      try {
+        const snapshot = await tauriInvoke<NativeWorldSnapshot>('get_world_snapshot');
+        if (!disposed) {
+          setNativeWorld(snapshot);
+          setNativeWorldStatus('open');
+        }
+      } catch {
+        if (!disposed) setNativeWorldStatus('empty');
+      }
+    };
+    void load();
+    const listen = window.__TAURI__?.event?.listen;
+    let unlistenOpened: (() => void) | undefined;
+    let unlistenClosed: (() => void) | undefined;
+    if (listen) {
+      void listen<NativeWorldSnapshot>('world://opened', ({ payload }) => {
+        if (!disposed) {
+          setNativeWorld(payload);
+          setNativeWorldStatus('open');
+        }
+      }).then((fn) => { unlistenOpened = fn; });
+      void listen('world://closed', () => {
+        if (!disposed) {
+          setNativeWorld(null);
+          setNativeWorldStatus('empty');
+        }
+      }).then((fn) => { unlistenClosed = fn; });
+    }
+    return () => {
+      disposed = true;
+      unlistenOpened?.();
+      unlistenClosed?.();
+    };
+  }, []);
 
   /* ---------- 导航历史 ---------- */
   const [hist, setHist] = useState<{ back: string[]; fwd: string[] }>({ back: [], fwd: [] });
@@ -100,14 +186,46 @@ export default function App() {
 
   const toggleTheme = () => setSettings((s) => ({ ...s, theme: dark ? 'light' : 'dark' }));
 
-  const newStoryFn = useCallback(() => {
-    const s = newStory();
+  const newStoryFn = useCallback(() => setWorldPickerOpen(true), []);
+
+  const createSession = useCallback((world: WorldAsset) => {
+    const template = initialStories.find((item) => item.world.name === world.name) ?? initialStories[0];
+    const s = { ...newStory(), worldId: world.id, title: `${world.name} · 新会话`, genre: world.genre, color: template.color, characters: world.characters, world: world.world, messages: [{ id: uid(), role: 'system' as const, content: `已选择世界「${world.name}」· 会话准备开始`, time: now() }] };
     setStories((prev) => [s, ...prev]);
     setActiveId((cur) => {
       setHist((h) => ({ back: [...h.back, cur], fwd: [] }));
       return s.id;
     });
+    setWorldPickerOpen(false);
   }, []);
+
+  /**
+   * 导入酒馆角色卡 / 世界书：读文件 → Rust 侧确定性解析 → 预览。
+   * 不在这里编造资产：解析失败就如实报错，未确认就不进世界库。
+   */
+  const importWorld = useCallback(async (file: File) => {
+    if (!window.__TAURI__?.core?.invoke) {
+      setImportNotice({ tone: 'info', text: '导入解析需要运行 Tauri 桌面应用；浏览器预览模式不使用演示数据顶替。' });
+      return;
+    }
+    setImportNotice({ tone: 'info', text: `正在解析 ${file.name}…` });
+    try {
+      const dataBase64 = await fileToBase64(file);
+      const imported = await tauriInvoke<ImportedWorld>('import_world_file', { fileName: file.name, dataBase64 });
+      setImportPreview({ imported, asset: toWorldAsset(imported, `world-import-${uid()}`, now()) });
+      setImportNotice(null);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `导入失败：${error instanceof Error ? error.message : String(error)}` });
+    }
+  }, []);
+
+  const confirmImport = useCallback(() => {
+    if (!importPreview) return;
+    setWorlds((prev) => [importPreview.asset, ...prev]);
+    setImportPreview(null);
+    setWorldLibraryOpen(false);
+    setWorldPickerOpen(true);
+  }, [importPreview]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -155,6 +273,34 @@ export default function App() {
   /* ---------- send event ---------- */
   const handleSend = (text: string, tag: string) => {
     const sid = story.id;
+    if (nativeWorldStatus === 'open' && window.__TAURI__?.core?.invoke) {
+      setBusy(true);
+      const ev: Message = { id: uid(), role: 'event', eventTag: tag, content: text, time: now() };
+      pendingNativeMessageId.current = ev.id;
+      update(sid, (s) => ({ ...s, updated: now(), messages: [...s.messages, ev] }));
+      void tauriInvoke<NativeWorldSnapshot>('submit_if_model', { runId: crypto.randomUUID(), input: text })
+        .then((snapshot) => {
+          setNativeWorld(snapshot);
+          update(sid, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', content: `IF 已创建待确认裁定卡（解析：${text}）。`, time: now() }] }));
+        })
+        .catch((error: unknown) => {
+          update(sid, (s) => ({
+            ...s,
+            messages: [
+              ...s.messages.filter((message) => message.id !== pendingNativeMessageId.current),
+              {
+              id: uid(),
+              role: 'system',
+              content: `IF 提交失败：${error instanceof Error ? error.message : String(error)}`,
+              time: now(),
+              },
+            ],
+          }));
+          pendingNativeMessageId.current = null;
+        })
+        .finally(() => setBusy(false));
+      return;
+    }
     const isFirst = story.characters.length === 0;
     setBusy(true);
     const ev: Message = { id: uid(), role: 'event', eventTag: tag, content: text, time: now() };
@@ -239,6 +385,58 @@ export default function App() {
     later(tick, 420);
   };
 
+  const handleConfirmIf = (input?: string) => {
+    if (!nativeWorld?.pending_if) return;
+    setBusy(true);
+    void tauriInvoke<NativeWorldSnapshot>('confirm_if', input ? { input } : {})
+      .then((snapshot) => {
+        setNativeWorld(snapshot);
+        update(story.id, (s) => ({
+          ...s,
+          messages: s.messages.map((message) => message.id === pendingNativeMessageId.current ? { ...message, content: input?.trim() || message.content } : message)
+            .concat({ id: uid(), role: 'system', time: now(), content: `裁定卡已确认，IF 已提交到事件日志（seq ${snapshot.head_seq}）。` }),
+        }));
+        pendingNativeMessageId.current = null;
+      })
+      .catch((error: unknown) => update(story.id, (s) => ({
+        ...s,
+        messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `确认裁定卡失败：${error instanceof Error ? error.message : String(error)}` }],
+      })))
+      .finally(() => setBusy(false));
+  };
+
+  const handleCancelIf = () => {
+    if (!nativeWorld?.pending_if) return;
+    setBusy(true);
+    void tauriInvoke<NativeWorldSnapshot>('cancel_if')
+      .then((snapshot) => {
+        setNativeWorld(snapshot);
+        update(story.id, (s) => ({
+          ...s,
+          messages: s.messages.filter((message) => message.id !== pendingNativeMessageId.current)
+            .concat({ id: uid(), role: 'system', time: now(), content: '裁定卡已取消，世界状态未改变。' }),
+        }));
+        pendingNativeMessageId.current = null;
+      })
+      .catch((error: unknown) => update(story.id, (s) => ({
+        ...s,
+        messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `取消裁定卡失败：${error instanceof Error ? error.message : String(error)}` }],
+      })))
+      .finally(() => setBusy(false));
+  };
+
+  const handleReinterpretIf = () => {
+    if (!nativeWorld?.pending_if) return;
+    setBusy(true);
+    void tauriInvoke<NativeWorldSnapshot>('reinterpret_if')
+      .then((snapshot) => {
+        setNativeWorld(snapshot);
+        update(story.id, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `冲突已按重释处理，IF 已提交到事件日志（seq ${snapshot.head_seq}）。` }] }));
+      })
+      .catch((error: unknown) => update(story.id, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `重释 IF 失败：${error instanceof Error ? error.message : String(error)}` }] })))
+      .finally(() => setBusy(false));
+  };
+
   const handleStop = () => {
     clearTimers();
     setBusy(false);
@@ -321,7 +519,8 @@ export default function App() {
     {
       label: '文件',
       items: [
-        { label: '新建故事', shortcut: 'Ctrl+N', onClick: newStoryFn },
+        { label: '新建会话', shortcut: 'Ctrl+N', onClick: newStoryFn },
+        { label: '世界库', onClick: () => setWorldLibraryOpen(true) },
         { label: '复制当前世界线', onClick: () => duplicate(story.id) },
         { divider: true },
         { label: '导入世界…' },
@@ -364,6 +563,8 @@ export default function App() {
     <div className="flex h-full flex-col bg-chrome">
       <TitleBar
         menus={menus}
+        nativeWorld={nativeWorld}
+        nativeWorldStatus={nativeWorldStatus}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         canBack={hist.back.length > 0}
         canForward={hist.fwd.length > 0}
@@ -379,6 +580,7 @@ export default function App() {
             dark={dark}
             onSelect={handleSelect}
             onNew={newStoryFn}
+            onLibrary={() => setWorldLibraryOpen(true)}
             onSettings={() => setSettingsOpen(true)}
             onDelete={handleDelete}
             onPin={(id) => update(id, (s) => ({ ...s, pinned: !s.pinned }))}
@@ -403,6 +605,10 @@ export default function App() {
             rightOpen={rightOpen}
             onToggleRight={() => setRightOpen(!rightOpen)}
             onSend={handleSend}
+            pendingIf={nativeWorld?.pending_if}
+            onConfirmIf={handleConfirmIf}
+            onCancelIf={handleCancelIf}
+            onReinterpretIf={handleReinterpretIf}
             onStop={handleStop}
             onRegenerate={handleRegenerate}
             onBranch={() => handleBranchFrom()}
@@ -461,6 +667,15 @@ export default function App() {
             setSettings(defaultSettings);
           }}
         />
+      )}
+      {worldPickerOpen && <WorldPicker worlds={worlds} onSelect={createSession} onCreateWorld={() => { setWorldPickerOpen(false); setWorldLibraryOpen(true); }} onImport={importWorld} onClose={() => setWorldPickerOpen(false)} />}
+      {worldLibraryOpen && <WorldLibrary worlds={worlds} onClose={() => setWorldLibraryOpen(false)} onCreate={() => { const name = `手动世界 ${worlds.length + 1}`; const asset: WorldAsset = { id: `world-written-${uid()}`, name, genre: '待撰写', summary: '手动撰写的世界资产。', source: 'written', characters: [], world: { name, genre: '待撰写', era: '—', day: 0, summary: '', rules: [], vars: [], factions: [], locations: [] }, updated: now() }; setWorlds((prev) => [asset, ...prev]); }} onImport={importWorld} onDelete={(id) => setWorlds((prev) => prev.filter((world) => world.id !== id))} />}
+      {importPreview && <WorldImportPreview imported={importPreview.imported} onConfirm={confirmImport} onCancel={() => { setImportPreview(null); }} />}
+      {importNotice && (
+        <div className={`absolute bottom-6 left-1/2 z-[60] flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded-lg border px-3 py-2 text-[12px] shadow-xl ${importNotice.tone === 'error' ? 'border-rose-500/50 bg-rose-500/10 text-rose-400' : 'border-line bg-elev text-muted'}`}>
+          <span className="min-w-0">{importNotice.text}</span>
+          <button onClick={() => setImportNotice(null)} className="shrink-0 rounded px-1 text-muted hover:text-fg" aria-label="关闭提示">×</button>
+        </div>
       )}
     </div>
   );

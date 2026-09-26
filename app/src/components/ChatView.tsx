@@ -16,6 +16,14 @@ interface Props {
   rightOpen: boolean;
   onToggleRight: () => void;
   onSend: (text: string, tag: string) => void;
+  pendingIf?: {
+    injection: { input: string; kind: string; core: string; time_anchor: string; scope: string; lock: string; non_commitments: string[] };
+    warnings: string[];
+    conflicts?: { event: string; existing_core: string; lock: string; reason: string }[];
+  };
+  onConfirmIf: (input?: string) => void;
+  onCancelIf: () => void;
+  onReinterpretIf: () => void;
   onStop: () => void;
   onRegenerate: () => void;
   onBranch: () => void;
@@ -31,6 +39,7 @@ const RANDOM_EVENTS = [
 
 export default function ChatView(p: Props) {
   const [text, setText] = useState('');
+  const [rulingInput, setRulingInput] = useState('');
   const [tag, setTag] = useState('天气');
   const [tagOpen, setTagOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
@@ -58,6 +67,8 @@ export default function ChatView(p: Props) {
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
   }, [text]);
+
+  useEffect(() => setRulingInput(p.pendingIf?.injection.input ?? ''), [p.pendingIf?.injection.input]);
 
   const send = (t = text, tg = tag) => {
     if (!t.trim() || p.busy) return;
@@ -197,6 +208,29 @@ export default function ChatView(p: Props) {
         >
           <ArrowDown size={16} />
         </button>
+      )}
+
+      {p.pendingIf && (
+        <div className="shrink-0 px-8 pb-3">
+          <div className={cn('mx-auto rounded-2xl border border-accent/30 bg-elev p-4 shadow-sm', width)}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-semibold text-accent">待确认的 IF 裁定卡</div>
+                <div className="mt-0.5 text-[12px] text-muted">{p.pendingIf.injection.kind} · {p.pendingIf.injection.time_anchor} · 锁定 {p.pendingIf.injection.lock}</div>
+              </div>
+              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">pending</span>
+            </div>
+            <textarea value={rulingInput} onChange={(event) => setRulingInput(event.target.value)} rows={2} className="mt-3 w-full resize-y rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-accent/60" />
+            <div className="mt-2 text-[12px] text-muted">核心命题：{p.pendingIf.injection.core} · 范围：{p.pendingIf.injection.scope}</div>
+            {p.pendingIf.warnings.length > 0 && <div className="mt-2 text-[12px] text-amber-500">{p.pendingIf.warnings.join('；')}</div>}
+            {!!p.pendingIf.conflicts?.length && <div className="mt-2 space-y-1 text-[12px] text-rose-400">{p.pendingIf.conflicts.map((conflict) => <div key={conflict.event}>冲突：{conflict.existing_core}（{conflict.lock}，{conflict.reason}）</div>)}</div>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button onClick={p.onCancelIf} disabled={p.busy} className="rounded-lg px-3 py-1.5 text-[13px] text-muted hover:bg-subtle disabled:opacity-40">取消</button>
+              <button onClick={() => p.onConfirmIf(rulingInput)} disabled={p.busy || !rulingInput.trim()} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40">确认并锁定</button>
+              {!!p.pendingIf.conflicts?.length && <button onClick={p.onReinterpretIf} disabled={p.busy} className="rounded-lg bg-rose-500 px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40">按重释确认</button>}
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="shrink-0 px-8 pb-5">

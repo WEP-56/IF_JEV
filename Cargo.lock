@@ -1541,9 +1541,12 @@ dependencies = [
 name = "if-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "if-agent",
  "if-domain",
  "if-judge",
+ "if-store",
  "keyring",
  "serde",
  "serde_json",

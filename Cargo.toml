@@ -19,6 +19,7 @@ repository = "https://github.com/WEP-56/IF_JEV"
 if-domain = { path = "crates/if-domain" }
 if-agent = { path = "crates/if-agent" }
 if-judge = { path = "crates/if-judge" }
+if-store = { path = "crates/if-store" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

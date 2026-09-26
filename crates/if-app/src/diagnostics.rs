@@ -11,6 +11,7 @@ use if_domain::{JudgmentOutput, ViewKind, ViewRef};
 use if_judge::{CompiledView, JevJudge, Judge, JudgeError, JudgeRequest, LlmJudge, Question};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::if_parser::IfDraft;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmEvent {
@@ -56,6 +57,35 @@ fn probe_tool() -> ToolSpec {
         }),
         parallel_safe: false,
     }
+}
+
+pub fn parse_if_with_model(settings: ProviderSettings, input: String, cancel: Arc<AtomicBool>) -> Result<IfDraft, String> {
+    if settings.model.trim().is_empty() {
+        return Err("结构模型尚未配置，无法进行 IF 解析".into());
+    }
+    let provider = build_provider(settings);
+    let tool = ToolSpec {
+        name: "submit_if_draft".into(),
+        description: "把用户输入解释为一条待确认的 IF 裁定卡。不要推演后果。".into(),
+        schema: json!({"type":"object","properties":{
+            "normalized":{"type":"string"},"is_directive":{"type":"boolean"},
+            "kind":{"type":"string","enum":["state","belief","rule","occurrence","truth","retcon","unknown"]},
+            "time_anchor":{"type":"string","enum":["now","past","always"]},
+            "scope":{"type":"string"},"suggested_lock":{"type":"string","enum":["L0","L1","L2","L3"]},
+            "core":{"type":"string"},"non_commitments":{"type":"array","items":{"type":"string"}},
+            "warnings":{"type":"array","items":{"type":"string"}}
+        },"required":["normalized","is_directive","kind","time_anchor","scope","suggested_lock","core","non_commitments","warnings"],"additionalProperties":false}),
+        parallel_safe: false,
+    };
+    let prompt = PromptContext { system_sections: vec!["你是 IF 世界的结构解析器。忠实解释用户输入，允许自然语言，不要擅自添加后果。必须调用 submit_if_draft。".into()], messages: vec![ChatMessage::user_text(input.clone())] };
+    let mut events = |_event: ProviderEvent| {};
+    let output = match provider.stream_turn(&prompt, &[tool], &mut events, &cancel) {
+        StreamTerminal::Done(output) => output,
+        StreamTerminal::Aborted(_) => return Err("IF 解析已取消".into()),
+        StreamTerminal::Error(error) => return Err(error.error.message),
+    };
+    let (_, _, args) = output.message.tool_uses().into_iter().next().ok_or_else(|| "结构模型未调用 submit_if_draft".to_owned())?;
+    serde_json::from_value::<IfDraft>(args.clone()).map_err(|error| format!("结构模型返回的 IF 草案无效：{error}"))
 }
 
 pub fn test_llm(
