@@ -11,13 +11,26 @@
 //!
 //! 折叠逻辑本身在 `if-domain` 的 [`if_domain::projection`] 里，这里是纯计算，
 //! 因此「同一事件序列得到同一投影」可以用单元测试直接验证。
+//!
+//! ## 两个库
+//!
+//! - 会话：每个世界一个 `.ifworld`（[`Store`]），只放某个世界被推进的历史；
+//! - 世界库：应用级一个 `library.db`（[`library::Library`]），放用户准备好的
+//!   **世界资产**。二者是两个对象（docs/10 §1），一个资产可以有多个会话。
+//!
+//! 分开是刻意的：删会话不该动到世界稿，删世界也不该静默删掉引用它的会话。
 
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod library;
 pub mod schema;
 pub mod store;
 
 pub use error::{Result, StoreError};
+pub use library::{
+    AssetDraft, AssetOrigin, AssetSummary, Library, LoreRecord, SessionRef, SourceRecord,
+    WorldAsset, MANUAL_SOURCE,
+};
 pub use schema::meta_key;
 pub use store::{EventDraft, Store, SNAPSHOT_INTERVAL};

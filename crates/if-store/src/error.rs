@@ -16,6 +16,12 @@ pub enum StoreError {
     LineNotWritable(String),
     /// 空数据库：还没有 `world_created`。
     WorldNotCreated,
+    /// 世界库里没有这个资产。
+    AssetMissing(String),
+    /// 资产被会话引用，不允许删除（docs/10 §2：不得静默删掉会话数据）。
+    AssetInUse { asset: String, sessions: u64 },
+    /// 条目挂在一个没登记过的来源键上。多半是键写错了。
+    UnknownLoreSource(String),
 }
 
 impl fmt::Display for StoreError {
@@ -29,6 +35,14 @@ impl fmt::Display for StoreError {
                 write!(f, "世界线 {line} 不接受新事件（备份分支或未选之路）")
             }
             StoreError::WorldNotCreated => write!(f, "世界尚未创建，缺少 world_created 事件"),
+            StoreError::AssetMissing(id) => write!(f, "世界库里没有资产 {id}"),
+            StoreError::AssetInUse { asset, sessions } => write!(
+                f,
+                "资产 {asset} 被 {sessions} 个会话引用，不能删除；请先删除或改绑这些会话"
+            ),
+            StoreError::UnknownLoreSource(key) => {
+                write!(f, "设定条目的来源键 {key} 没有对应的来源记录")
+            }
         }
     }
 }

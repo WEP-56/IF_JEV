@@ -13,7 +13,10 @@ mod model;
 mod png;
 mod value;
 
-pub use model::ImportedWorld;
+pub use model::{
+    ImportedAsset, ImportedCharacter, ImportedLore, ImportedWorld, LoreLogic, LoreRole, LoreSection,
+    LorebookMeta,
+};
 pub use png::decode_base64;
 
 use serde_json::Value;
@@ -58,6 +61,21 @@ pub fn parse_bytes(bytes: &[u8], file_name: Option<&str>) -> Result<ImportedWorl
         world.source_file = Some(name.to_owned());
     }
     Ok(world)
+}
+
+/// 取出文件里的**原始 JSON 文本**：PNG 卡是内嵌的那段，文本文件就是文本本身。
+///
+/// 世界库把它当**来源附件**留在库里（docs/10 §7 第 5 步），这样日后重导不必再找原文件。
+/// 它是一次独立的扫描，与 [`parse_bytes`] 各扫一遍——PNG 块是线性扫的，
+/// 相对于「把 `parse_bytes` 的返回值改成元组、所有调用点跟着改」这点开销不算什么。
+pub fn raw_json(bytes: &[u8]) -> Result<String, String> {
+    if png::looks_like_png(bytes) {
+        png::card_json_from_png(bytes).map(|(json, _chunk)| json)
+    } else {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|e| format!("文件不是 UTF-8 文本：{e}"))
+    }
 }
 
 /// 卡/世界书中出现的宏标记。按 D14，`{{user}}` 会被转成由世界推演的主角。

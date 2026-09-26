@@ -96,6 +96,10 @@ export interface Story {
   tokens: number;
 }
 
+/**
+ * 一个完整的可复用世界资产：带角色与世界视图，用来给新会话播种。
+ * 由世界库的**详情**接口重建（`library.ts::toWorldAssetFromDetail`）。
+ */
 export interface WorldAsset {
   id: string;
   name: string;
@@ -104,6 +108,27 @@ export interface WorldAsset {
   source: 'demo' | 'written' | 'imported';
   characters: Character[];
   world: World;
+  updated: string;
+}
+
+/**
+ * 世界库列表里的一条摘要（对应 Rust `AssetSummary`）。
+ *
+ * 与 `WorldAsset` 分开是刻意的：列表页只需要元数据与计数，不该把几百条设定和
+ * 角色正文全读出来。`demo` 只在浏览器预览的演示数据里出现，Rust 侧只有 imported / written。
+ */
+export interface LibraryAsset {
+  id: string;
+  name: string;
+  genre: string;
+  summary: string;
+  origin: 'imported' | 'written' | 'demo';
+  revision: number;
+  loreCount: number;
+  sourceCount: number;
+  /** 引用这个资产的会话数。大于 0 时不能删除（docs/10 §2）。 */
+  sessionCount: number;
+  sourceFiles: string[];
   updated: string;
 }
 

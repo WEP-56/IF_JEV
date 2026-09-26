@@ -67,6 +67,12 @@ id_type!(RuleId, "rule_", "世界规则 ID。");
 id_type!(ClaimId, "claim_", "声称 ID。");
 id_type!(JudgmentId, "jdg_", "判定记录 ID。");
 id_type!(CandidateId, "cand_", "候选 ID，由引擎分配（docs/05 §5.2）。");
+id_type!(
+    AssetId,
+    "asset_",
+    "世界库里的**资产** ID（docs/10 §2）。资产是用户准备好的世界材料，会话的某一段历史\
+     ——二者是两个对象：一个资产可以有多个会话，删会话不该动到资产。例如 `asset_0001`。"
+);
 
 /// 玩家在认知层里的主体 ID。玩家的认知投影就是有限上帝视角（docs/02 §4.2）。
 pub const USER_HOLDER: &str = "user";

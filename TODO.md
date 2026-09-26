@@ -52,11 +52,13 @@
 - [ ] 实现酒馆角色卡与世界书导入
   - [x] 确定性解析：V1 / V2 / V3 卡、PNG `chara` / `ccv3` 文本块、CCv3 与酒馆运行时两套世界书方言（`crates/if-app/src/importer/`）
   - [x] 联网核实 `docs/13 §6` 待核实清单 1–3，并补公开 CC BY 样本回归（`crates/if-app/tests/fixtures/`）
-  - [x] 导入预览（`WorldImportPreview`）与 IPC 接线；用户确认后才进世界库
+  - [x] 导入预览（`WorldImportPreview`）与 IPC 接线；用户确认后才写入世界库
   - [x] 真实 PNG 卡体检并按其行为修正导入器（`docs/13 §6.4`；体检入口 `cargo run -p if-app --example inspect_card`）
-  - [ ] 导入结果持久化为独立世界资产（不能复用会话 `world_created` 事件）
+  - [x] 导入结果持久化为独立世界资产（`if-store::library` + `library.db`，与会话的 `.ifworld` 分开；见 docs/10 §7.0）
+  - [x] 来源身份与整组替换（`if-app::library::source_key_of` + `content_hash`；条目按 `source_key` 整组替换，重导不留残影）
   - [ ] 导入 → `if-domain` 的确定性映射（主体 / 设定条目 / 规则草案）
-  - [ ] 条目加 `origin` 字段（来源类型 + 来源卡 / 文件 + 条目 uid + 卡版本），支持按来源整组替换
+  - [ ] 建会话时写入 `world_sessions` 引用，并在删除资产时用它拦住「还有会话在用」
+  - [ ] 条目 `uid` 对数字型 `id` 字段的识别（`{"0":{"id":7}}` 目前回落到 map 键 `"0"`，见 docs/16 已知限制）
   - [ ] 独立 `lorebook_v3`、酒馆运行时 World Info JSON、多世界书合并去重补测
 
 ## 前端

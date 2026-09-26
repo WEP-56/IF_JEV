@@ -21,12 +21,14 @@ v1 只支持沙盒模式，同一时间只打开一个世界。事件日志是�
 
 ```text
 app/                    React + TypeScript + Vite 前端
-crates/if-app/          Tauri 命令、事件、设置、密钥、世界工作线程、IF 预解析、酒馆导入
+crates/if-app/          Tauri 命令、事件、设置、密钥、世界工作线程、IF 预解析、酒馆导入、世界库映射
   src/importer/         酒馆角色卡 / 世界书导入（card / lorebook / png / model / value）
+  src/library.rs        导入结果 ↔ 世界库的映射（来源身份键、内容哈希、摘要）
 crates/if-domain/       领域类型、事件补丁、投影、世界线、回合记录、裁定卡
 crates/if-views/        视图编译、可见性判定、预算裁剪、稳定指纹
 crates/if-policy/       阈值表、命运骰子、分层裁决、观察带与趋势、导演评分
 crates/if-store/        SQLite 事件日志、投影、快照、世界线
+  src/library.rs        世界库：世界资产 / 来源 / 设定条目 / 会话引用（独立 library.db）
 crates/if-agent/        Agent loop、provider、工具 schema
 crates/if-judge/        Jev、LLM 裁判、测试桩与重试
 docs/                   正式设计与工程文档
@@ -67,6 +69,14 @@ IF 流程（**裁定卡生命周期已实现**）：
 - `examples/inspect_card.rs`：对真实卡文件做导入体检（`cargo run -p if-app --example inspect_card -- <文件...>`），确定性、不联网、不落盘。
 - 诊断：`test_llm` / `probe_jev` / `test_judge`。
 
+世界库（**世界资产已持久化**，[10 §2](10-世界创建与导入.md)）：
+
+- 独立 `library.db`（与 `settings.json` 同目录），与会话的 `.ifworld` 是两个库、两个对象。
+- `list_worlds` / `get_world_asset` / `delete_world_asset`：列表给摘要（含条目数、来源数、会话数），详情给 payload + 全部条目。
+- `import_world_to_library` / `import_world_file_to_library` / `create_written_world`：写入类命令统一返回 `AssetChange { detail, assets }`，省一趟往返。
+- **按来源整组替换**：来源身份键是「来源类别 + 名字」（不含卡版本 / 文件名 / 内容哈希），同一来源重导先删该来源的旧条目再写入新的。内容哈希另存一列回答「是不是同一份」。
+- `delete_world_asset` 在被 `world_sessions` 引用时**拒绝**，并说明有几个会话在用。
+
 裁决与视图（纯计算、无网络，尚未接入回合流程）：
 
 - `if-views`：把投影编译成「某个消费方有资格看到的形式」。八种视图（parse / god / director / pov / narration / check / player / creation）的状态装配、预算裁剪、`public / private / secret` 可见性判定外加 L1 保护期，以及判定记录要存的稳定指纹。P9（视角隔离）的唯一落点就在这里。
@@ -77,15 +87,17 @@ IF 流程（**裁定卡生命周期已实现**）：
 
 - Tauri 启动时读取世界快照，顶部栏显示真实世界名和事件序号。
 - Tauri 模式发送 IF 时走 `submit_if_model`，在聊天区显示事件序号和解析草案。
-- 世界库二级页（`WorldLibrary`）+ 新建会话世界选择器（`WorldPicker`）。
-- **导入预览（`WorldImportPreview`）**：读文件 → `import_world_file` → 展示角色 / 设定条目 / 警告 / 来源字段 → 用户确认后才进世界库。
-- 非 Tauri 的 Vite 预览仍使用演示数据和模拟回合；导入在无 Tauri 时**明确提示**，不用假数据顶替。
+- 世界库二级页（`WorldLibrary`）+ 新建会话世界选择器（`WorldPicker`），列表读 `library.db` 的摘要
+  （`loreCount` / `sourceCount` / `sessionCount`），选中后再读详情、重建世界视图来播种会话。
+- **导入预览（`WorldImportPreview`）**：读文件 → `import_world_file` → 展示角色 / 设定条目 / 警告 / 来源字段 → 用户确认后经 `import_world_file_to_library` 写入世界库。
+- 非 Tauri 的 Vite 预览仍使用演示数据和模拟回合；导入 / 手动撰写 / 删除在世界库上**明确提示不支持**，不写假数据。
+- 世界库读不出来时**显式横幅报错并清空列表**，不留上一次的陈旧快照。
 
 ### 已验证命令
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 238 个测试通过
+cargo test --workspace              # 当前 270 个测试通过（含集成测试）
 
 cd E:\IF\app
 npx tsc --noEmit
@@ -107,20 +119,23 @@ IF 王宫刚刚起火了
 IF 骑士一直是失踪的王储
 ```
 
-导入验收可用：把 `crates/if-app/tests/fixtures/peiyu.v2.json`（或任意酒馆 JSON / PNG 卡）拖进世界库的「导入」，应看到导入预览而不是直接落库。
+导入验收可用：把 `crates/if-app/tests/fixtures/peiyu.v2.json`（或任意酒馆 JSON / PNG 卡）拖进世界库的「导入」，应看到导入预览而不是直接落库。确认后**关掉应用再打开**，资产应还在（这就是这个世界库要解的问题）。同一张卡再导一次，条目数不应翻倍。
 
 ## 4. 当前明确边界
 
 - `parse_if` 与 `import_world_*` 都是**启发式 / 确定性**的，不调用真实结构模型；`parse_if` 也不做 Jev 忠实度判定。
 - 导入的**语义抽取**（主体 / 事实 / 规则 / 故事线）尚未实现——导入结果只是忠实的规范化记录 + warnings。
 - `LoreSection::Style` 已存在但没有**任何**自动映射：真实卡的 `position` 只区分角色定义前后，归段靠 T-parse 或用户指定。
-- 导入结果**尚未持久化**：没有独立的世界资产表 / 文件格式，世界库仍是前端内存态，刷新即丢。
+- **会话引用还没登记**：`world_sessions` 表与「被引用时拒绝删除」的检查都已实现并有测试，但**建会话时还没有写入这条引用**（取决于 [10 §3](10-世界创建与导入.md) 的会话创建流程）。所以在那之前，删掉一个正在被会话使用的资产不会被拦住。
+- **来源改名 = 新来源**：`source_key` 只取「来源类别 + 名字」，用户把卡改名后再导入会与旧的并存（可见、可删），而不是替换。这是刻意的取舍，见 [10 §7.0](10-世界创建与导入.md)。
+- **数字型条目 `id` 未被识别**：`{"0":{"id":7,...}}` 这类条目，`uid` 会回落到 map 键 `"0"` 而不是 `7`（`lorebook::parse_entry` 的 `text(entry, "id")` 只读字符串）。影响的是「回指原文件」的精度，不影响来源身份与替换；等真实卡补测时一并处理。
 - 尚无裁定卡 **UI**（Rust 侧命令与 domain 类型已具备）。
 - `if-views` / `if-policy` 已落地且单测全绿，但**没有任何调用方**。也就是说：
   「谁有权看到哪些事实」和「概率怎么变成结果」两件事都已经能算，只是回合流程还没去用它们。
 - 尚无候选生成、场景计划、节拍检查、正文回收和提交闭环——这些属于尚未创建的 `if-pipeline`。
 - 前端目前仍以演示故事为主要视觉数据源，真实投影尚未映射成角色 / 世界 / 导图面板。
 - `open_world` 已有命令，但前端尚未提供世界文件选择器。
+- 世界资产的**世界层内容仍是不透明 payload**（`ImportedWorld` 的 JSON）：`if-store` 不解释它，重建世界视图靠 `if-app::library` 反序列化。等导入 → `if-domain` 的确定性映射落地，这里应换成有类型的结构。
 
 ## 5. 下一阶段工作顺序
 
@@ -140,17 +155,26 @@ IF 骑士一直是失踪的王储
 - ✅ 两处 domain 缺口一并补上：`Candidate::key`（稳定决策键，跨世界线不变）、`ResolutionPolicy::SeededCategorical`（docs/06 §1 的互斥类策略原本在枚举里是缺的）。
 - ⚠️ 都还没有调用方，也没接真实 Jev——它们只被单元测试覆盖。
 
+### 已完成：世界资产持久化（`library.db`）
+
+- ✅ `if-store::library`：独立 `library.db`，四张表 + 元信息；世界资产 / 来源 / 设定条目 / 会话引用。
+- ✅ `if-app::library`：`ImportedWorld` ↔ 存储形状的映射，含来源身份键与内容哈希。
+- ✅ 按来源整组替换（重导不留残影、不误伤别的来源）；来源键打错会被拒绝而不是造孤儿行。
+- ✅ 前端世界库读写全部走 IPC；列表与详情分开，删除被引用时如实报错。
+- ⚠️ 会话引用只实现到「表 + 拒绝删除」，建会话时还没登记（见 §4）。
+
 ### 下一步（按优先级）
 
-1. **世界资产持久化**：`if-store` 增加独立的世界资产表 / 文件格式；世界资产不能复用会话 `world_created` 事件，也不能在新建会话时隐式创建世界。导入确认后写入，并在重启后仍可见。
-2. **条目 `origin` 字段**：来源类型 + 来源卡 / 文件 + 条目 uid + 卡版本，用于「重新导入同一张卡时按来源整组替换」与多卡合并去重（[13 §0.2](13-酒馆兼容.md)）。
-3. **真实文件补测（剩余）**：独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、含 V3 扩展字段的真实卡、带装饰器的卡——由用户提供（[13 §6.3](13-酒馆兼容.md)）。
-4. **导入 → 世界模型的确定性映射**：把 `ImportedWorld` 转成 `if-domain` 的主体 / 设定条目 / 规则草案，再接 T-parse 与 `q.extract.faithful` 校验。
-5. **裁定卡 UI**：把已有的 pending / confirm / cancel / reinterpret 命令接到前端。
-6. **`if-pipeline`：一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。
+1. **建会话时登记资产引用**：把 [10 §3](10-世界创建与导入.md) 的会话创建流程接上，写入 `world_sessions`
+   （`Library::attach_session`），让「删除被引用的世界」这道闸门真正生效；同时给前端加世界文件选择器。
+2. **导入 → 世界模型的确定性映射**：把 `ImportedWorld` 转成 `if-domain` 的主体 / 设定条目 / 规则草案，
+   再把世界资产的 `payload` 从「不透明 JSON」换成有类型的结构；之后接 T-parse 与 `q.extract.faithful` 校验。
+3. **真实文件补测（剩余）**：独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、含 V3 扩展字段的真实卡、带装饰器的卡——由用户提供（[13 §6.3](13-酒馆兼容.md)）。顺手处理数字型条目 `id` 的 `uid` 识别。
+4. **裁定卡 UI**：把已有的 pending / confirm / cancel / reinterpret 命令接到前端。
+5. **`if-pipeline`：一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。
    - 裁决与视图两层已经就绪（`if-policy` / `if-views`），本阶段要写的是**编排**：任务定义、`IfTaskHost`、工具实现、失败兜底，以及把 Jev 的判定喂进 `Policy::run`。
    - 第一版用 Judge stub + scripted provider 全流程跑通，再接真实 LLM/Jev。
-7. **真实投影前端化** → **视图隔离与 v1 验收**（[15](15-v1范围.md)）。
+6. **真实投影前端化** → **视图隔离与 v1 验收**（[15](15-v1范围.md)）。
 
 ## 6. 接手时先读什么
 
@@ -162,7 +186,7 @@ IF 骑士一直是失踪的王储
 4. [13 酒馆兼容](13-酒馆兼容.md)（酒馆适配的字段依据，§0.1 的双方言表是重点）；
 5. [10 世界库与导入](10-世界创建与导入.md) §2 / §7；
 6. [04 回合流程](04-回合流程.md)、[01 IF 规则](01-IF规则.md)、[03 事件与世界线](03-事件与世界线.md)、[06 裁决策略](06-裁决策略.md)、[08 视图与世界书](08-视图与世界书.md)；
-7. 代码：`crates/if-app/src/importer/`、`world_worker.rs`、`app/src/App.tsx`；
+7. 代码：`crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、`crates/if-store/src/library.rs`、`app/src/library.ts`、`app/src/App.tsx`；
 8. 若要接回合流程，先读 `crates/if-views/src/`（视图与可见性）与 `crates/if-policy/src/`
    （阈值表、命运骰子、分层裁决、导演评分）——它们是纯计算层，读起来没有副作用，
    接的时候只需要「喂输入、取输出」。

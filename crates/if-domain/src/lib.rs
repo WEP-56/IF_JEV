@@ -37,8 +37,8 @@ pub use event::{
     Retcon, TimeAnchor,
 };
 pub use id::{
-    BeatId, CandidateId, ClaimId, EventId, JudgmentId, LoreId, PropositionId, RuleId, SceneId,
-    SubjectId, TendencyId, ThreadId, TurnId, WorldLineId, USER_HOLDER,
+    AssetId, BeatId, CandidateId, ClaimId, EventId, JudgmentId, LoreId, PropositionId, RuleId,
+    SceneId, SubjectId, TendencyId, ThreadId, TurnId, WorldLineId, USER_HOLDER,
 };
 pub use narrative::{
     tendency_push_delta, Beat, LoreEntry, LoreSection, LoreStatus, LoreVisibility, RevealTarget,

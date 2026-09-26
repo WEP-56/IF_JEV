@@ -1,12 +1,13 @@
 //! IF 桌面应用入口：Tauri 命令与事件（docs/12 §4）。
 //!
-//! 目前接入的是设置、密钥和连通性诊断；回合相关的命令（`submit_if`、`continue_turn`……）
-//! 随 `if-pipeline` 一起接入。
+//! 目前接入的是设置、密钥、连通性诊断，以及**世界库**（世界资产的持久化，docs/10 §2）。
+//! 回合相关的命令（`submit_if`、`continue_turn`……）随 `if-pipeline` 一起接入。
 
 mod diagnostics;
 mod if_parser;
 // 对 `examples/inspect_card` 暴露，便于对真实卡文件做导入体检。
 pub mod importer;
+pub mod library;
 mod secrets;
 mod settings;
 mod world_worker;
@@ -16,11 +17,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use if_domain::id::AssetId;
+use if_store::library::{AssetSummary, Library};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use diagnostics::{JudgeTestInput, JudgeTestResult, LlmTestResult};
 use if_parser::IfDraft;
+use library::{AssetChange, AssetDetail};
 use secrets::{KeySlot, KeySource};
 use settings::{AppSettings, Slot};
 use world_worker::{WorldSnapshot, WorldWorker};
@@ -28,6 +32,8 @@ use world_worker::{WorldSnapshot, WorldWorker};
 struct AppState {
     settings: Mutex<AppSettings>,
     settings_path: PathBuf,
+    /// 世界库（`library.db`）。世界资产与会话事件日志是两个对象，因此两个库（docs/10 §1）。
+    library: Mutex<Library>,
     runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     world: Mutex<Option<WorldWorker>>,
 }
@@ -298,6 +304,94 @@ fn import_world_file(file_name: String, data_base64: String) -> Result<importer:
     importer::parse_bytes(&bytes, Some(&file_name))
 }
 
+/* ---------- 世界库：世界资产的持久化（docs/10 §2） ---------- */
+
+/// 导入结果写入世界库。
+///
+/// 来源身份键相同（同一张卡，哪怕版本/正文/文件名变了）时落在**同一个资产**上并
+/// 按来源整组替换条目；否则新建一个。判据见 `library::source_key_of`。
+fn save_import(
+    world: &importer::ImportedWorld,
+    raw: &str,
+    guard: &mut Library,
+) -> Result<AssetChange, String> {
+    let existing = guard
+        .asset_of_source(&library::source_key_of(world))
+        .map_err(|e| e.to_string())?;
+    let draft = library::draft_from_import(world, raw, existing)?;
+    let asset = guard.save_asset(draft).map_err(|e| e.to_string())?;
+    Ok(AssetChange {
+        detail: AssetDetail::load(guard, &asset.id)?,
+        assets: library::list(guard)?,
+    })
+}
+
+#[tauri::command]
+fn list_worlds(state: State<'_, AppState>) -> Result<Vec<AssetSummary>, String> {
+    library::list(&state.library.lock().expect("library poisoned"))
+}
+
+#[tauri::command]
+fn get_world_asset(state: State<'_, AppState>, id: String) -> Result<AssetDetail, String> {
+    AssetDetail::load(&state.library.lock().expect("library poisoned"), &AssetId::new(id))
+}
+
+/// 删除资产。被会话引用时会被拒绝，并说明有几个会话在引用它（docs/10 §2）。
+#[tauri::command]
+fn delete_world_asset(state: State<'_, AppState>, id: String) -> Result<Vec<AssetSummary>, String> {
+    let mut guard = state.library.lock().expect("library poisoned");
+    guard.delete_asset(&AssetId::new(id)).map_err(|e| e.to_string())?;
+    library::list(&guard)
+}
+
+#[tauri::command]
+fn import_world_to_library(state: State<'_, AppState>, input: String) -> Result<AssetChange, String> {
+    let world = importer::parse_json(&input)?;
+    let mut guard = state.library.lock().expect("library poisoned");
+    save_import(&world, &input, &mut guard)
+}
+
+#[tauri::command]
+fn import_world_file_to_library(
+    state: State<'_, AppState>,
+    file_name: String,
+    data_base64: String,
+) -> Result<AssetChange, String> {
+    let bytes = importer::decode_base64(&data_base64)?;
+    let world = importer::parse_bytes(&bytes, Some(&file_name))?;
+    // 来源附件存的是**原始 JSON**（PNG 卡取内嵌那段），不是 PNG 二进制：
+    // 日后重导要的是可读材料，二进制对审阅没有价值。
+    let raw = importer::raw_json(&bytes)?;
+    let mut guard = state.library.lock().expect("library poisoned");
+    save_import(&world, &raw, &mut guard)
+}
+
+/// 手动撰写一个新世界。主体、设定、规则在世界库界面里补（docs/10 §2）。
+#[tauri::command]
+fn create_written_world(
+    state: State<'_, AppState>,
+    name: String,
+    genre: Option<String>,
+    summary: Option<String>,
+) -> Result<AssetChange, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("世界名称不能为空".into());
+    }
+    let mut guard = state.library.lock().expect("library poisoned");
+    let draft = library::draft_written(
+        name,
+        genre.as_deref().unwrap_or(""),
+        summary.as_deref().unwrap_or(""),
+        None,
+    );
+    let asset = guard.save_asset(draft).map_err(|e| e.to_string())?;
+    Ok(AssetChange {
+        detail: AssetDetail::load(&guard, &asset.id)?,
+        assets: library::list(&guard)?,
+    })
+}
+
 #[tauri::command]
 fn close_world(app: tauri::AppHandle, state: State<'_, AppState>) {
     state.world.lock().expect("world state poisoned").take();
@@ -319,9 +413,13 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let settings_path = dir.join("settings.json");
             let settings = AppSettings::load(&settings_path);
+            // 世界库与设置放在同一处。打不开就是硬错误：一个「装作已经存好了」
+            // 的世界库比一个起不来的应用更糟。
+            let library = Library::open(dir.join("library.db"))?;
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 settings_path,
+                library: Mutex::new(library),
                 runs: Mutex::new(HashMap::new()),
                 world: Mutex::new(None),
             });
@@ -346,6 +444,12 @@ pub fn run() {
             parse_if,
             import_world_json,
             import_world_file,
+            list_worlds,
+            get_world_asset,
+            delete_world_asset,
+            import_world_to_library,
+            import_world_file_to_library,
+            create_written_world,
             close_world,
             get_world_snapshot,
         ])

@@ -21,6 +21,8 @@ if-judge.workspace = true
 if-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# 来源附件的内容哈希：判断「这次导入的内容和上次是不是同一份」。
+sha2.workspace = true
 # PNG 角色卡内嵌 JSON 的解码与 zTXt / iTXt 解压（两者都已在 Cargo.lock 中）。
 base64 = "0.22"
 flate2 = "1"

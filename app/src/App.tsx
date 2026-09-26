@@ -5,32 +5,24 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import RightPanel from './components/RightPanel';
 import SettingsModal from './components/SettingsModal';
-import type { Character, Message, Settings, Story } from './types';
+import type { Character, LibraryAsset, Message, Settings, Story, WorldAsset } from './types';
 import { defaultSettings, initialStories, initialWorldAssets, mockJev, mockNarration, newStory, now, uid } from './data';
-import type { WorldAsset } from './types';
 import WorldLibrary from './components/WorldLibrary';
 import WorldPicker from './components/WorldPicker';
 import WorldImportPreview from './components/WorldImportPreview';
-import { fileToBase64, toWorldAsset, type ImportedWorld } from './import';
-
-declare global {
-  interface Window {
-    __TAURI__?: {
-      core?: { invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T> };
-      event?: {
-        listen: <T>(event: string, handler: (payload: { payload: T }) => void) => Promise<() => void>;
-      };
-      window?: {
-        getCurrentWindow: () => {
-          minimize: () => Promise<void>;
-          toggleMaximize: () => Promise<void>;
-          close: () => Promise<void>;
-          startDragging: () => Promise<void>;
-        };
-      };
-    };
-  }
-}
+import { fileToBase64, type ImportedWorld } from './import';
+import {
+  createWrittenWorld,
+  deleteWorldAsset,
+  demoLibraryAssets,
+  demoWorldById,
+  importFileToLibrary,
+  listWorlds,
+  loadWorldAsset,
+  toLibraryAssets,
+  toWorldAssetFromDetail,
+} from './library';
+import { isNative, tauriInvoke } from './ipc';
 
 type NativeWorldSnapshot = {
   path: string;
@@ -82,7 +74,12 @@ function loadSettings(): Settings {
 
 export default function App() {
   const [stories, setStories] = useState<Story[]>(initialStories);
-  const [worlds, setWorlds] = useState<WorldAsset[]>(initialWorldAssets);
+  /**
+   * 世界库列表。Tauri 模式下是 `library.db` 的快照（重启后还在）；
+   * 浏览器预览模式退到演示资产，并且只读——不假装已经存下来了。
+   */
+  const [assets, setAssets] = useState<LibraryAsset[]>(() => demoLibraryAssets(initialWorldAssets));
+  const [libraryError, setLibraryError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState(initialStories[0].id);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -90,8 +87,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [worldLibraryOpen, setWorldLibraryOpen] = useState(false);
   const [worldPickerOpen, setWorldPickerOpen] = useState(false);
-  /** 导入解析结果，等待用户审阅确认后才进入世界库（docs/10 §7）。 */
-  const [importPreview, setImportPreview] = useState<{ imported: ImportedWorld; asset: WorldAsset } | null>(null);
+  /** 导入解析结果，等待用户审阅确认后才写入世界库（docs/10 §7）。 */
+  const [importPreview, setImportPreview] = useState<{ imported: ImportedWorld; fileName: string; dataBase64: string } | null>(null);
   const [importNotice, setImportNotice] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [nativeWorld, setNativeWorld] = useState<NativeWorldSnapshot | null>(null);
@@ -200,11 +197,53 @@ export default function App() {
   }, []);
 
   /**
+   * 重新读世界库。Tauri 模式下读 `library.db`；读不出来就**显式报错并清空列表**，
+   * 不留下上一次的陈旧快照让人以为东西还在。浏览器预览用演示资产顶替（只读）。
+   */
+  const reloadLibrary = useCallback(async () => {
+    if (!isNative()) {
+      setAssets(demoLibraryAssets(initialWorldAssets));
+      setLibraryError(null);
+      return;
+    }
+    try {
+      setAssets(await listWorlds());
+      setLibraryError(null);
+    } catch (error) {
+      setAssets([]);
+      setLibraryError(`读取世界库失败：${describe(error)}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (worldLibraryOpen || worldPickerOpen) void reloadLibrary();
+  }, [worldLibraryOpen, worldPickerOpen, reloadLibrary]);
+
+  /**
+   * 选中一个资产 → 读详情 → 用详情里的角色与世界视图播种新会话。
+   * 列表只有摘要，所以详情要现读（也顺手把「资产被改动过」这件事同步进来）。
+   */
+  const selectWorld = useCallback(async (id: string) => {
+    try {
+      const asset = isNative()
+        ? toWorldAssetFromDetail(await loadWorldAsset(id))
+        : demoWorldById(initialWorldAssets, id);
+      if (!asset) {
+        setImportNotice({ tone: 'error', text: `世界库里没有资产 ${id}` });
+        return;
+      }
+      createSession(asset);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `读取世界资产失败：${describe(error)}` });
+    }
+  }, [createSession]);
+
+  /**
    * 导入酒馆角色卡 / 世界书：读文件 → Rust 侧确定性解析 → 预览。
-   * 不在这里编造资产：解析失败就如实报错，未确认就不进世界库。
+   * 不在这里编造资产：解析失败就如实报错，未确认就不写库。
    */
   const importWorld = useCallback(async (file: File) => {
-    if (!window.__TAURI__?.core?.invoke) {
+    if (!isNative()) {
       setImportNotice({ tone: 'info', text: '导入解析需要运行 Tauri 桌面应用；浏览器预览模式不使用演示数据顶替。' });
       return;
     }
@@ -212,20 +251,63 @@ export default function App() {
     try {
       const dataBase64 = await fileToBase64(file);
       const imported = await tauriInvoke<ImportedWorld>('import_world_file', { fileName: file.name, dataBase64 });
-      setImportPreview({ imported, asset: toWorldAsset(imported, `world-import-${uid()}`, now()) });
+      // 原始 base64 留到确认时用：写入世界库走的是「文件进、解析+落库」一条命令，
+      // 免得把解析结果再从 JS 塞回 Rust（那样导入层的映射就绕过了一次）。
+      setImportPreview({ imported, fileName: file.name, dataBase64 });
       setImportNotice(null);
     } catch (error) {
-      setImportNotice({ tone: 'error', text: `导入失败：${error instanceof Error ? error.message : String(error)}` });
+      setImportNotice({ tone: 'error', text: `导入失败：${describe(error)}` });
     }
   }, []);
 
-  const confirmImport = useCallback(() => {
+  /** 用户确认后才写库。同一张卡再次导入会替换它的条目，而不是叠一份。 */
+  const confirmImport = useCallback(async () => {
     if (!importPreview) return;
-    setWorlds((prev) => [importPreview.asset, ...prev]);
-    setImportPreview(null);
-    setWorldLibraryOpen(false);
-    setWorldPickerOpen(true);
+    setImportNotice({ tone: 'info', text: `正在写入世界库：${importPreview.fileName}…` });
+    try {
+      const change = await importFileToLibrary(importPreview.fileName, importPreview.dataBase64);
+      setAssets(toLibraryAssets(change.assets));
+      setLibraryError(null);
+      setImportPreview(null);
+      setImportNotice({
+        tone: 'info',
+        text: `已写入世界库：${change.detail.asset.name}（${change.detail.lore.length} 条设定，来源 ${change.detail.asset.id}）`,
+      });
+      setWorldLibraryOpen(false);
+      setWorldPickerOpen(true);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `写入世界库失败：${describe(error)}` });
+    }
   }, [importPreview]);
+
+  /** 手动撰写：建一个空骨架资产，主体与世界设置留到世界库里补（docs/10 §2）。 */
+  const createWorldManually = useCallback(async () => {
+    if (!isNative()) {
+      setImportNotice({ tone: 'info', text: '手动撰写需要运行 Tauri 桌面应用；浏览器预览模式不写入任何东西。' });
+      return;
+    }
+    try {
+      const change = await createWrittenWorld(`手动世界 ${assets.length + 1}`, '待撰写', '手动撰写的世界资产。');
+      setAssets(toLibraryAssets(change.assets));
+      setImportNotice({ tone: 'info', text: `已新建世界：${change.detail.asset.name}` });
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `新建世界失败：${describe(error)}` });
+    }
+  }, [assets.length]);
+
+  /** 删除资产。被会话引用时后端会拒绝并说明原因，这里把它显示出来而不是假装成功。 */
+  const removeWorld = useCallback(async (id: string) => {
+    if (!isNative()) {
+      setAssets((prev) => prev.filter((world) => world.id !== id));
+      return;
+    }
+    try {
+      setAssets(await deleteWorldAsset(id));
+      setLibraryError(null);
+    } catch (error) {
+      setLibraryError(`删除失败：${describe(error)}`);
+    }
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -668,9 +750,9 @@ export default function App() {
           }}
         />
       )}
-      {worldPickerOpen && <WorldPicker worlds={worlds} onSelect={createSession} onCreateWorld={() => { setWorldPickerOpen(false); setWorldLibraryOpen(true); }} onImport={importWorld} onClose={() => setWorldPickerOpen(false)} />}
-      {worldLibraryOpen && <WorldLibrary worlds={worlds} onClose={() => setWorldLibraryOpen(false)} onCreate={() => { const name = `手动世界 ${worlds.length + 1}`; const asset: WorldAsset = { id: `world-written-${uid()}`, name, genre: '待撰写', summary: '手动撰写的世界资产。', source: 'written', characters: [], world: { name, genre: '待撰写', era: '—', day: 0, summary: '', rules: [], vars: [], factions: [], locations: [] }, updated: now() }; setWorlds((prev) => [asset, ...prev]); }} onImport={importWorld} onDelete={(id) => setWorlds((prev) => prev.filter((world) => world.id !== id))} />}
-      {importPreview && <WorldImportPreview imported={importPreview.imported} onConfirm={confirmImport} onCancel={() => { setImportPreview(null); }} />}
+      {worldPickerOpen && <WorldPicker worlds={assets} onSelect={selectWorld} onCreateWorld={() => { setWorldPickerOpen(false); setWorldLibraryOpen(true); }} onImport={importWorld} onClose={() => setWorldPickerOpen(false)} />}
+      {worldLibraryOpen && <WorldLibrary worlds={assets} error={libraryError} onClose={() => setWorldLibraryOpen(false)} onCreate={() => { void createWorldManually(); }} onImport={importWorld} onDelete={(id) => { void removeWorld(id); }} />}
+      {importPreview && <WorldImportPreview imported={importPreview.imported} onConfirm={() => { void confirmImport(); }} onCancel={() => { setImportPreview(null); }} />}
       {importNotice && (
         <div className={`absolute bottom-6 left-1/2 z-[60] flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded-lg border px-3 py-2 text-[12px] shadow-xl ${importNotice.tone === 'error' ? 'border-rose-500/50 bg-rose-500/10 text-rose-400' : 'border-line bg-elev text-muted'}`}>
           <span className="min-w-0">{importNotice.text}</span>
@@ -702,8 +784,6 @@ function nativeSettings(settings: Settings): NativeSettings {
   };
 }
 
-function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const invoke = window.__TAURI__?.core?.invoke;
-  if (!invoke) return Promise.reject(new Error('真实模型测试需要运行 Tauri 桌面应用'));
-  return invoke<T>(command, args);
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
