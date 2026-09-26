@@ -67,7 +67,10 @@ IF 流程（**裁定卡生命周期已实现**）：
 - `parse_if` / `parse_if_model`：IF 预解析，输出导演指令标记、类型初判、时间锚点、作用范围、锁定建议、不承诺项与警告。
 - `import_world_json` / `import_world_file`：酒馆导入。自动识别 PNG（`chara` / `ccv3` 文本块，优先 `ccv3`）与 UTF-8 JSON；同时兼容 CCv3 规范与酒馆运行时两套字段方言；含装饰器剥离、`position` → 归段映射、宏检测（`{{user}}` 等）。条目字段按「顶层 → `extensions`」分层读取（真实卡把引擎状态放在 `extensions`，见 [13 §6.4](13-酒馆兼容.md)）。
 - `examples/inspect_card.rs`：对真实卡文件做导入体检（`cargo run -p if-app --example inspect_card -- <文件...>`），确定性、不联网、不落盘。
-- 诊断：`test_llm` / `probe_jev` / `test_judge`。
+- `tests/library_roundtrip.rs`：真实 PNG 卡 → 解析 → 映射 → 落库 → 读回 → 重导幂等。
+  样本在 `sk-example/`（不入库），**文件不在就跳过**，不会在别人的 clone 上跑出假红。
+  这是 `inspect_card` 覆盖不到的那一段——它不落盘。
+- 诊断：`test_llm` / `probe_jev` / `test_judge`（`probe_jev` **只有命令、没有 UI 入口**）。
 
 世界库（**世界资产已持久化**，[10 §2](10-世界创建与导入.md)）：
 
@@ -97,7 +100,7 @@ IF 流程（**裁定卡生命周期已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 270 个测试通过（含集成测试）
+cargo test --workspace              # 当前 272 个测试通过（含集成测试）
 
 cd E:\IF\app
 npx tsc --noEmit
@@ -121,10 +124,17 @@ IF 骑士一直是失踪的王储
 
 导入验收可用：把 `crates/if-app/tests/fixtures/peiyu.v2.json`（或任意酒馆 JSON / PNG 卡）拖进世界库的「导入」，应看到导入预览而不是直接落库。确认后**关掉应用再打开**，资产应还在（这就是这个世界库要解的问题）。同一张卡再导一次，条目数不应翻倍。
 
+`sk-example/` 两张真实 PNG 卡是更好的验收对象（1886 KB / 147 条 / 10 万字那个尤其值得跑）：
+它顺带压测了 base64 过 IPC 与 418 KB 来源附件落 SQLite 这条链路——
+Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base64 → IPC」这一段只有真机能验**。
+
 ## 4. 当前明确边界
 
 - `parse_if` 与 `import_world_*` 都是**启发式 / 确定性**的，不调用真实结构模型；`parse_if` 也不做 Jev 忠实度判定。
 - 导入的**语义抽取**（主体 / 事实 / 规则 / 故事线）尚未实现——导入结果只是忠实的规范化记录 + warnings。
+- **三种真实方言仍未覆盖**（只有合成 fixture，见 [13 §6.3](13-酒馆兼容.md)）：V3 `assets` / `group_only_greetings`、正文里的 `@@` 装饰器、独立 `lorebook_v3` 与酒馆运行时 World Info JSON。
+  `sk-example/` 两张真实卡实测 `assets = 0`、`带装饰器 = 0`——**别把「跑过真实 PNG 卡」当成「V3 分支也验过了」**。
+  其中后两项是**导出产物**，在酒馆里导出一次即可覆盖，比找样本容易。
 - `LoreSection::Style` 已存在但没有**任何**自动映射：真实卡的 `position` 只区分角色定义前后，归段靠 T-parse 或用户指定。
 - **会话引用还没登记**：`world_sessions` 表与「被引用时拒绝删除」的检查都已实现并有测试，但**建会话时还没有写入这条引用**（取决于 [10 §3](10-世界创建与导入.md) 的会话创建流程）。所以在那之前，删掉一个正在被会话使用的资产不会被拦住。
 - **来源改名 = 新来源**：`source_key` 只取「来源类别 + 名字」，用户把卡改名后再导入会与旧的并存（可见、可删），而不是替换。这是刻意的取舍，见 [10 §7.0](10-世界创建与导入.md)。

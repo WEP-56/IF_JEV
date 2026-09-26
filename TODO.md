@@ -56,8 +56,10 @@
   - [x] 真实 PNG 卡体检并按其行为修正导入器（`docs/13 §6.4`；体检入口 `cargo run -p if-app --example inspect_card`）
   - [x] 导入结果持久化为独立世界资产（`if-store::library` + `library.db`，与会话的 `.ifworld` 分开；见 docs/10 §7.0）
   - [x] 来源身份与整组替换（`if-app::library::source_key_of` + `content_hash`；条目按 `source_key` 整组替换，重导不留残影）
+  - [x] 真实卡落库回归：PNG → 解析 → 映射 → 落库 → 读回 → 重导幂等（`crates/if-app/tests/library_roundtrip.rs`，样本缺则跳过）
   - [ ] 导入 → `if-domain` 的确定性映射（主体 / 设定条目 / 规则草案）
   - [ ] 建会话时写入 `world_sessions` 引用，并在删除资产时用它拦住「还有会话在用」
+  - [ ] 补测三种**仍未覆盖**的真实方言（见 docs/13 §6.3）：V3 `assets` / `@@` 装饰器、独立 `lorebook_v3`、酒馆运行时 World Info JSON。两张真实卡实测 `assets=0`、`带装饰器=0`，所以这三项只有合成 fixture。
   - [ ] 条目 `uid` 对数字型 `id` 字段的识别（`{"0":{"id":7}}` 目前回落到 map 键 `"0"`，见 docs/16 已知限制）
   - [ ] 独立 `lorebook_v3`、酒馆运行时 World Info JSON、多世界书合并去重补测
 
