@@ -19,7 +19,7 @@ pub mod slug;
 mod world_worker;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -271,6 +271,48 @@ fn list_sessions(state: State<'_, AppState>, world_id: String) -> Result<Vec<Ses
     session::sessions_of(&library, &AssetId::new(world_id))
 }
 
+/// 世界库里**全部**会话。启动时侧栏靠它恢复——没有它，重启就等于「会话全没了」。
+#[tauri::command]
+fn list_all_sessions(state: State<'_, AppState>) -> Result<Vec<SessionRef>, String> {
+    session::all_sessions(&state.library.lock().expect("library poisoned"))
+}
+
+/// 删除一条会话：先移出世界库，再尽量删掉它占的 `.ifworld`。
+///
+/// 如果删的正是当前打开的那个世界，**先把它关掉**：Windows 上打开着的文件删不掉，
+/// 不关的话就是「引用没了、文件还在」——磁盘上多一个谁也看不见的世界，而用户以为删干净了。
+/// `WorldWorker` 的 `Drop` 里 `join` 了它的线程，所以关掉之后文件是真的没有句柄了。
+#[tauri::command]
+async fn delete_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<SessionRef>, String> {
+    let reference = {
+        let library = state.library.lock().expect("library poisoned");
+        session::remove(&library, &session_id)?
+    };
+    let Some(reference) = reference else {
+        return Err(format!("世界库里没有会话 {session_id}"));
+    };
+    {
+        let mut world = state.world.lock().expect("world state poisoned");
+        let open = world
+            .as_ref()
+            .is_some_and(|worker| worker.path().display().to_string() == reference.world_file);
+        if open {
+            world.take();
+            let _ = app.emit("world://closed", ());
+        }
+    }
+    for file in session::world_files(Path::new(&reference.world_file)) {
+        // 尽力而为：真删不掉（被别处占用、权限不足）就留着。那只是一个**没有人引用**的
+        // 文件，不会再出现在任何列表里；比「报错但引用已经删掉、用户以为还在」清楚。
+        let _ = std::fs::remove_file(file);
+    }
+    session::all_sessions(&state.library.lock().expect("library poisoned"))
+}
+
 /// 恢复一个已有会话：重启之后回到上一次的进度。
 #[tauri::command]
 async fn open_session(
@@ -486,6 +528,8 @@ pub fn run() {
             cancel_run,
             create_session,
             list_sessions,
+            list_all_sessions,
+            delete_session,
             open_session,
             open_world,
             submit_if,

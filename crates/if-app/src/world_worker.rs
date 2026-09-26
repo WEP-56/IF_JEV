@@ -40,6 +40,11 @@ enum Request {
 }
 
 pub struct WorldWorker {
+    /// 这个 worker 持有的世界文件路径。
+    ///
+    /// 留着它是为了**不必往返就能判断「现在开着的是不是某个文件」**——
+    /// 删除会话时要先把打开着的世界关掉（Windows 上打开着的文件删不掉）。
+    path: PathBuf,
     requests: Option<Sender<Request>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -185,6 +190,7 @@ impl WorldWorker {
         {
             Ok((snapshot, seed)) => Ok(WorldHandle {
                 world: Self {
+                    path,
                     requests: Some(requests),
                     thread: Some(thread),
                 },
@@ -196,6 +202,11 @@ impl WorldWorker {
                 Err(error)
             }
         }
+    }
+
+    /// 这个 worker 打开的是哪个世界文件。
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn snapshot(&self) -> Result<WorldSnapshot, String> {

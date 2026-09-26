@@ -27,6 +27,11 @@ use crate::world_worker::{
 #[derive(Debug, Serialize)]
 pub struct SessionView {
     pub snapshot: WorldSnapshot,
+    /// 会话在世界库里的 ID（也是世界文件名主干）。
+    ///
+    /// 前端拿它去删除或重新打开这条会话。没有它的话，前端只能靠世界文件路径反推，
+    /// 而世界文件路径是后端实现的细节，不该成为客户端的寻址方式。
+    pub session_id: String,
     pub asset_id: String,
     pub asset_name: String,
     pub genre: String,
@@ -106,6 +111,7 @@ pub fn create(
     );
     let view = SessionView {
         snapshot: handle.snapshot.clone(),
+        session_id: reference.id.clone(),
         asset_id: material.id.to_string(),
         asset_name: material.name,
         genre: material.genre,
@@ -125,6 +131,7 @@ pub fn resume(library: &Library, session_id: &str) -> Result<(WorldHandle, Sessi
     let handle = WorldWorker::open(PathBuf::from(&reference.world_file))?;
     let view = SessionView {
         snapshot: handle.snapshot.clone(),
+        session_id: reference.id.clone(),
         asset_id: material.id.to_string(),
         asset_name: material.name,
         genre: material.genre,
@@ -138,6 +145,42 @@ pub fn resume(library: &Library, session_id: &str) -> Result<(WorldHandle, Sessi
 /// 某个世界已有的会话，按创建时间排。新建会话前用它提示「这个世界已经有会话了」。
 pub fn sessions_of(library: &Library, id: &AssetId) -> Result<Vec<SessionRef>, String> {
     library.sessions_of_asset(id).map_err(|e| e.to_string())
+}
+
+/// 世界库里全部会话，最近的在前。**启动时靠它把侧栏恢复出来**——
+/// 没有它，前端只能显示本次运行里建过的会话，重启就等于「会话全没了」。
+pub fn all_sessions(library: &Library) -> Result<Vec<SessionRef>, String> {
+    library.all_sessions().map_err(|e| e.to_string())
+}
+
+/// 一条会话在世界磁盘上的全部文件：`.ifworld` 与它的 SQLite 边车 `-wal` / `-shm`。
+///
+/// 边车文件不能漏：把主文件删掉而留下 `-wal`，下次有人用同名文件建会话时
+/// SQLite 会读到一段**属于上一个世界的预写日志**。
+pub fn world_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![path.to_path_buf()];
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        files.push(PathBuf::from(name));
+    }
+    files
+}
+
+/// 删掉一条会话引用，返回它原来指向的世界文件。
+///
+/// **先删引用、再删文件**（文件由调用方删，因为它还要先关掉可能正开着的那个世界：
+/// Windows 上打开着的文件删不掉）。顺序反过来的话，文件没了而引用还在，
+/// 列表里会留下一条「点开就报错」的会话，而用户看不出哪里不对。
+/// 引用先没了的话，最坏情况只是一个**没有人引用**的 `.ifworld` 留在磁盘上。
+///
+/// 返回 `None` 表示这条会话本来就不存在——调用方据此报错，而不是假装删掉了。
+pub fn remove(library: &Library, session_id: &str) -> Result<Option<SessionRef>, String> {
+    let Some(reference) = library.session(session_id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    library.detach_session(session_id).map_err(|e| e.to_string())?;
+    Ok(Some(reference))
 }
 
 /// 会话 ID 用世界文件名主干：`new_world_path` 已经保证了它唯一（带纳秒时间戳），

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use if_domain::id::AssetId;
 use if_store::library::{AssetDraft, AssetOrigin, Library};
 
-use super::{create, load, resume, sessions_of};
+use super::{all_sessions, create, load, remove, resume, sessions_of, world_files};
 
 const CARD: &str = r#"{"spec":"chara_card_v2","data":{
     "name":"裴聿","description":"长安县令","scenario":"雨夜的长安","first_mes":"雨落在青石板上。",
@@ -218,4 +218,73 @@ fn sessions_of_lists_what_was_created_for_a_world() {
     // 一个资产可以有多个会话，各自的 `.ifworld` 是分开的
     assert_ne!(sessions[0].world_file, sessions[1].world_file);
     assert!(sessions.iter().all(|session| session.asset_id == id));
+}
+
+#[test]
+fn the_view_carries_the_session_id_so_the_client_can_address_it() {
+    let (library, id) = library_with_card();
+    let dir = TempDir::new();
+
+    let (handle, view, reference) = create(load(&library, &id).unwrap(), dir.path(), None).unwrap();
+
+    // 客户端删除 / 重开这条会话都要用它；没有它，前端只能拿世界文件路径反推，
+    // 而那是后端实现的细节，不该出现在客户端的寻址里。
+    assert_eq!(view.session_id, reference.id);
+    drop(handle);
+}
+
+/// 「重启之后会话还在吗」——`all_sessions` 就是这个问题在存储层的答案。
+///
+/// 顺带盯住 `remove` 的两条契约：删掉的不能还在、不存在的要如实回报 `None`。
+#[test]
+fn all_sessions_spans_worlds_and_remove_takes_one_away() {
+    let (library, id) = library_with_card();
+    let dir = TempDir::new();
+
+    let (first, _, reference) =
+        create(load(&library, &id).unwrap(), dir.path(), Some("一".into())).unwrap();
+    library.attach_session(&reference).unwrap();
+    let first_id = reference.id.clone();
+    drop(first);
+
+    let (second, _, reference) =
+        create(load(&library, &id).unwrap(), dir.path(), Some("二".into())).unwrap();
+    library.attach_session(&reference).unwrap();
+    let second_id = reference.id.clone();
+    let second_file = reference.world_file.clone();
+    drop(second);
+
+    assert_eq!(all_sessions(&library).unwrap().len(), 2);
+
+    let removed = remove(&library, &second_id).unwrap().expect("这条会话是存在的");
+    // 调用方要靠返回的引用去删文件：先删引用、再删文件，删不掉也只是留个孤儿
+    assert_eq!(removed.world_file, second_file);
+
+    let left: Vec<String> = all_sessions(&library)
+        .unwrap()
+        .into_iter()
+        .map(|session| session.id)
+        .collect();
+    assert_eq!(left, [first_id], "删掉的那条要消失，没删的不能受牵连");
+
+    assert!(remove(&library, "没有这条").unwrap().is_none());
+}
+
+#[test]
+fn world_files_covers_the_wal_and_shm_sidecars() {
+    let names: Vec<String> = world_files(Path::new("C:/x/雨城-第一卷-1.ifworld"))
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    // 漏掉边车文件的话，下次用同名文件建会话时 SQLite 会读到
+    // **上一个世界**的预写日志——那种错乱极难查。
+    assert_eq!(
+        names,
+        [
+            "雨城-第一卷-1.ifworld",
+            "雨城-第一卷-1.ifworld-wal",
+            "雨城-第一卷-1.ifworld-shm"
+        ]
+    );
 }

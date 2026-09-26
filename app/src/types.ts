@@ -92,6 +92,19 @@ export interface Story {
   /** Reusable world asset selected when this session was created. */
   worldId?: string;
   /**
+   * 这条故事对应世界库里的一条会话。
+   *
+   * 有它、而 `loaded` 不为真时，这是一条**占位**：重启后从 `library.db` 列出来的会话，
+   * 投影还没载入。点开它才会去后端打开那个 `.ifworld`——一次只开一个世界，
+   * 启动时把所有会话都打开一遍既慢又没有意义（docs/12 §5）。
+   *
+   * `id` 用世界文件路径，和 `world_file` 是同一个字符串，所以「占位」与「载入后的同一条」
+   * 天然是同一个 id，不会在侧栏里叠成两条。
+   */
+  session?: { id: string; worldFile: string; assetId: string };
+  /** `session` 的投影是否已经载入。占位条目是 `false`/缺省。 */
+  loaded?: boolean;
+  /**
    * 真实会话的投影（`if-domain::Projection`）。
    *
    * 演示故事没有它。有它时，右栏的世界视图以它为准——它是「这个世界现在是什么样」，

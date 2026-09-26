@@ -57,8 +57,13 @@ crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚�
 
 - `create_session(world_id, label?)`：选一个已保存的世界资产 → 在 `worlds/` 下开一个新的 `.ifworld`
   → **播种**（见下）→ 在 `library.db` 写一条 `world_sessions` 引用。返回 `SessionView`。
+  `SessionView.session_id` 就是那条引用的 ID，前端靠它重开 / 删除。
 - `list_sessions(world_id)`：某个世界已有的会话（新建前用它问「要用哪个会话」）。
+- `list_all_sessions()`：**全部**会话，最近的在前。**启动时侧栏靠它恢复**——
+  不读库的话，重启之后侧栏只剩演示故事，而会话其实好好地躺在 `world_sessions` 里。
 - `open_session(session_id)`：从 `world_sessions` 找回 `.ifworld` 重新打开，**不重新播种**。
+- `delete_session(session_id)`：移出世界库 + 删掉世界文件（含 `-wal` / `-shm`）。
+  删的若是当前打开的世界，**先关掉它**（Windows 上打开着的文件删不掉）。
 - `open_world(path)` / `close_world` / `get_world_snapshot`；`world://opened` / `world://closed` 事件。
 - **没有 `create_world` 命令**——[10 §3](10-世界创建与导入.md) 要求新建会话必须先选世界；
   「空世界」走世界库的「手动撰写」（那也是一个资产，只是 payload 里没有角色与设定）。
@@ -123,7 +128,7 @@ IF 流程（**裁定卡生命周期已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 308 个测试通过（19 个测试目标 + 7 个 doc-test 目标）
+cargo test --workspace              # 当前 312 个测试通过（19 个测试目标 + 7 个 doc-test 目标）
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
@@ -162,12 +167,24 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
    - 这个世界**已有会话**：先弹 `SessionPicker` 问要用哪个，或新建一个。
 3. 顶部栏应显示真实世界名与事件序号；右侧「世界」页签的角色 / 设定条目 / 规则应来自**投影**，
    而不是资产里的原稿。
-4. **关掉应用再打开**，重选同一个世界 → 会话列表里应还在，点进去应回到同样的投影
-   （这条验的是「会话引用真的写进了 `library.db`」）。
-5. 顺手验一下闸门：随便挑一个**正在被会话引用**的世界资产点删除，应被拒绝并报出有几个会话在用。
+4. **关掉应用再打开**——这是关键一步。侧栏里那条会话**应当还在**（顺序在最前）。
+   点它一下，才会打开它的世界文件；聊天区出现一条现状摘要
+   （`已载入会话「…」：事件日志 N 条 · 世界时间 … · 主体 M 个`），右侧世界视图重新填上。
+   理由：投影要打开 `.ifworld` 才有，而一次只开一个世界，所以重启只列**占位**、点开才载入。
+   > 🐞 **2026-09-26 修掉的真机 bug**：第一版把会话列表只放在前端内存里，
+   > 于是「建完会话 → 重启 → 侧栏空了」，而 `world_sessions` 里那条引用明明在。
+   > 教训：**持久化做对了不等于用户看得见**（[10 §3.0](10-世界创建与导入.md)）。
+5. 顺手验两个闸门：
+   - 挑一个**正在被会话引用**的世界资产点删除 → 应被拒绝，并报出有几个会话在用；
+   - 在侧栏对一条会话点删除 → 应消失，**再重启一次也不回来**（那才是真删了引用），
+     并且 `%APPDATA%\io.github.wep56.if\worlds\` 下它的 `.ifworld` 应当一并没了。
 
 > 播种只在**创建**时发生。开场白每次都从报告里重放，不会被写成世界事实——
 > 这是刻意的（见 §3），不是 bug。
+>
+> 侧栏里还会留着几条**演示故事**（`initialStories`），它们背后没有世界文件，
+> 是前端早期的示例数据。把「真实会话」和「演示故事」分开是下一刀的事——
+> 目前真实会话排在演示故事前面，且只有真实会话能发 IF。
 
 ## 4. 当前明确边界
 
@@ -197,6 +214,15 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 - **播种不解释设定条目的语义**：条目的「承重 / 氛围」分流交给 T-parse 与 LLM 草案
   （[10 §3.0](10-世界创建与导入.md)），播种只搬运。所以世界书条目现在全部按 `Public` 落入
   `LoreEntry`，关键词 / 常驻标志被如实带上，但**世界书激活（[08 §5](08-视图与世界书.md)）还没有调用方**。
+- **侧栏混着演示故事**：Tauri 模式下真实会话排在 `initialStories` 前面，但两者仍在同一份
+  `stories` 状态里。演示故事背后没有世界文件、发 IF 不会落到它们身上。把两者分开（真实会话单独一组）
+  是下一刀，不是现在的阻塞项。
+- **聊天记录不持久化**：`.ifworld` 里是**事件**，`messages` 只是前端缓存（docs/12 §5）。
+  所以重开一条会话看到的是「开场白 + 一条现状摘要」，不是上次的对话原文——
+  对话原文要等正文回收（`if-pipeline` 的 Proposed / Observed / Committed）落地后才知道该不该存、怎么存。
+- **删除会话可能留下孤儿文件**：`delete_session` 先删引用再删文件，若文件仍被别处占用
+  （杀不掉的句柄、权限不足），引用没了而 `.ifworld` 留在 `worlds/` 下。它不会再出现在任何列表里，
+  但也不会被自动清理——需要一个「整理世界文件」的入口【后续】。
 
 ## 5. 下一阶段工作顺序
 
@@ -231,9 +257,12 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 - ✅ `if-store::Store::next_seq()`：让播种能在**写之前**算出事件 ID；分配规则由
   `event_ids_follow_next_seq` + `plan_matches_store_allocation` 两侧钉住。
 - ✅ `if-app::session`：创建（写 `.ifworld` + 登记引用）/ 恢复 / 列举，10 项单测（用真实文件与真实 SQLite）。
-- ✅ 命令面：`create_session` / `list_sessions` / `open_session`；**删掉了 `create_world`**。
+- ✅ 命令面：`create_session` / `list_sessions` / `list_all_sessions` / `open_session` / `delete_session`；**删掉了 `create_world`**。
 - ✅ 前端：选世界 → （有会话时先问用哪个）→ 真建会话 → 用**投影**重建角色 / 世界 / 设定条目面板，
   并把播种报告的「需要你拿主意的地方」渲染成可见消息。
+- ✅ **重启后会话还在**（真机反馈后补上）：侧栏一启动就读 `library.db` 的会话，渲染成**占位**条目，
+  点开才打开世界文件。删除会话会把引用与世界文件一起删掉。
+  （第一版没有这一步，结果是「建完会话重启就找不到了」——见 [10 §3.0](10-世界创建与导入.md)。）
 - ✅ 顺手修掉一个真缺陷：`new_world_path` 原先只保留 ASCII，中文标签会静默塌成 `world`——
   抽出 `if-app::slug`（保留 CJK），两个调用方共用。
 - ⚠️ 播种**不猜语义**：只有确定性搬运，不判断条目是事实还是氛围；`{{user}}` 也还没处理（D14，

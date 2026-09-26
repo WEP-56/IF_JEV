@@ -423,6 +423,41 @@ fn a_session_can_be_looked_up_by_id() {
     );
 }
 
+/// 启动时侧栏要靠 `all_sessions` 一次拿全：跨资产、最近的在前。
+///
+/// 这条测试盯的是「按资产问」会漏掉的两个点——它必须**跨资产**，
+/// 而且顺序必须是**创建时间倒序**（前端直接把返回顺序当展示顺序用）。
+#[test]
+fn all_sessions_spans_assets_and_lists_the_newest_first() {
+    let mut library = Library::open_in_memory().unwrap();
+    let first = library
+        .save_asset(AssetDraft::new("甲的", AssetOrigin::Written))
+        .unwrap();
+    let second = library
+        .save_asset(AssetDraft::new("乙的", AssetOrigin::Written))
+        .unwrap();
+
+    assert!(library.all_sessions().unwrap().is_empty());
+
+    for (id, asset, created_at) in [
+        ("old", &first.id, 1_000),
+        ("newer", &second.id, 3_000),
+        ("middle", &first.id, 2_000),
+    ] {
+        let mut reference = session(id, asset);
+        reference.created_at = created_at;
+        library.attach_session(&reference).unwrap();
+    }
+
+    let ids: Vec<String> = library
+        .all_sessions()
+        .unwrap()
+        .into_iter()
+        .map(|session| session.id)
+        .collect();
+    assert_eq!(ids, ["newer", "middle", "old"]);
+}
+
 // ------------------------------------------------------------------ 删除
 
 #[test]

@@ -5,7 +5,7 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import RightPanel from './components/RightPanel';
 import SettingsModal from './components/SettingsModal';
-import type { Character, LibraryAsset, Message, Settings, Story, WorldAsset } from './types';
+import type { Character, LibraryAsset, Message, Settings, Story, World, WorldAsset } from './types';
 import { defaultSettings, initialStories, initialWorldAssets, mockJev, mockNarration, newStory, now, uid } from './data';
 import WorldLibrary from './components/WorldLibrary';
 import WorldPicker from './components/WorldPicker';
@@ -17,12 +17,21 @@ import {
   deleteWorldAsset,
   demoLibraryAssets,
   demoWorldById,
+  formatStamp,
   importFileToLibrary,
   listWorlds,
   toLibraryAssets,
 } from './library';
-import { createSession, listSessions, openSession, type SessionRef, type SessionView } from './session';
-import { toCharacters, toWorld } from './projection';
+import {
+  createSession,
+  deleteSession,
+  listAllSessions,
+  listSessions,
+  openSession,
+  type SessionRef,
+  type SessionView,
+} from './session';
+import { formatWorldTime, toCharacters, toWorld } from './projection';
 import { isNative, tauriInvoke } from './ipc';
 
 type NativeWorldSnapshot = SessionView['snapshot'];
@@ -46,6 +55,55 @@ function loadSettings(): Settings {
     /* ignore */
   }
   return defaultSettings;
+}
+
+/** 投影载入之前的世界视图空壳。字段齐但都是空的，渲染层不必为它特判。 */
+function blankWorld(name: string, genre: string): World {
+  return { name, genre, era: '未载入', day: 0, summary: '', rules: [], vars: [], factions: [], locations: [] };
+}
+
+/** 会话属于侧栏的哪一栏。与 `data.ts` 的分组口径一致。 */
+function groupOf(ms: number): Story['group'] {
+  const days = (Date.now() - ms) / 86_400_000;
+  if (days < 1) return '今天';
+  if (days < 7) return '最近 7 天';
+  return '更早';
+}
+
+/**
+ * 一条**会话占位**：世界库里真实存在、但投影还没载入的会话。
+ *
+ * 先把「有哪些会话」摆出来，点开才去打开它的 `.ifworld`——一次只开一个世界，
+ * 启动时把所有会话都打开一遍既慢又没有意义（docs/12 §5）。
+ *
+ * `id` 取世界文件路径，和载入后的 story id 是同一个字符串，所以同一条会话不会
+ * 在侧栏里同时以「占位」和「载入后」两种形态出现两条。
+ */
+function placeholderOf(reference: SessionRef, asset: LibraryAsset | undefined): Story {
+  const name = asset?.name ?? reference.label;
+  return {
+    id: reference.world_file,
+    session: { id: reference.id, worldFile: reference.world_file, assetId: reference.asset_id },
+    loaded: false,
+    worldId: reference.asset_id,
+    title: reference.label || name || reference.id,
+    genre: asset?.genre ?? '',
+    color: 'bg-zinc-500',
+    updated: formatStamp(reference.created_at),
+    group: groupOf(reference.created_at),
+    tokens: 0,
+    characters: [],
+    world: blankWorld(name, asset?.genre ?? ''),
+    map: [],
+    messages: [
+      {
+        id: `pending-${reference.id}`,
+        role: 'system',
+        time: formatStamp(reference.created_at),
+        content: '这条会话还没载入。点一下它才会打开它自己的世界文件——一次只开一个世界，所以重启时不会把每条会话都预先打开。',
+      },
+    ],
+  };
 }
 
 export default function App() {
@@ -185,7 +243,19 @@ export default function App() {
       messages.push({ id: uid(), role: 'narrator', time: now(), content: opening, choices: [] });
     }
     const seed = view.seed;
-    if (!seed) return messages;
+    if (!seed) {
+      // 恢复不是播种：世界早就写好了。这里给一条**如实的现状摘要**——比只显示开场白
+      // 让人以为「历史丢了」强，也比假装重放一遍聊天记录诚实（聊天记录是前端缓存，
+      // 真相在事件日志与投影里，docs/12 §5）。
+      const projection = view.snapshot.projection;
+      messages.push({
+        id: uid(),
+        role: 'system',
+        time: now(),
+        content: `已载入会话「${view.snapshot.label}」：事件日志 ${view.snapshot.event_count} 条 · 世界时间 ${formatWorldTime(projection.world_time)} · 主体 ${Object.keys(projection.subjects).length} 个`,
+      });
+      return messages;
+    }
     const counts = [`${seed.subjects} 个主体`, `${seed.lore} 条设定`];
     if (seed.lore_constant) counts.push(`其中 ${seed.lore_constant} 条常驻`);
     if (seed.lore_disabled) counts.push(`${seed.lore_disabled} 条在卡里停用未写入`);
@@ -211,10 +281,12 @@ export default function App() {
    *
    * `id` 用世界文件路径：同一条会话被打开两次应当是同一个故事，而不是叠出两份。
    */
-  const applySession = useCallback((view: SessionView, asset: LibraryAsset) => {
+  const applySession = useCallback((view: SessionView, asset?: LibraryAsset) => {
     const projection = view.snapshot.projection;
     const story: Story = {
       id: view.snapshot.path,
+      session: { id: view.session_id, worldFile: view.snapshot.path, assetId: view.asset_id },
+      loaded: true,
       worldId: view.asset_id,
       title: view.snapshot.label,
       genre: view.genre,
@@ -223,7 +295,7 @@ export default function App() {
       group: '今天',
       tokens: 0,
       characters: toCharacters(projection),
-      world: toWorld(projection, { name: view.asset_name, genre: view.genre, summary: asset.summary }),
+      world: toWorld(projection, { name: view.asset_name, genre: view.genre, summary: asset?.summary ?? '' }),
       // IF 导图还没有接世界线（下一刀）；先放一个如实的起点，免得画布空着
       map: [{ id: 'origin', label: view.snapshot.label, type: 'origin', day: 'D0', main: true, desc: `由世界资产「${view.asset_name}」播种，共 ${view.snapshot.event_count} 条事件。` }],
       messages: sessionMessages(view),
@@ -269,17 +341,29 @@ export default function App() {
     }
   }, [applySession]);
 
-  /** 回到已有会话：重启之后靠它回到上一次的进度。 */
-  const resumeSession = useCallback(async (session: SessionRef, asset: LibraryAsset) => {
+  /**
+   * 打开一条已有会话：重启之后靠它回到上一次的进度。
+   *
+   * 侧栏里的占位条目与 `SessionPicker` 里的条目走的是同一条路。两处各写一遍的话，
+   * 「打开会话」就有了两个实现，迟早会不一致。
+   */
+  const openSessionById = useCallback(async (sessionId: string, asset?: LibraryAsset) => {
     setBusy(true);
     try {
-      applySession(await openSession(session.id), asset);
+      applySession(await openSession(sessionId), asset);
     } catch (error) {
       setImportNotice({ tone: 'error', text: `打开会话失败：${describe(error)}` });
     } finally {
       setBusy(false);
     }
   }, [applySession]);
+
+  /** 点开侧栏里那条还没载入的会话——**这时才去打开它的世界文件**。 */
+  const loadSession = useCallback((story: Story) => {
+    const session = story.session;
+    if (!session) return;
+    void openSessionById(session.id, assets.find((item) => item.id === session.assetId));
+  }, [assets, openSessionById]);
 
   /**
    * 重新读世界库。Tauri 模式下读 `library.db`；读不出来就**显式报错并清空列表**，
@@ -303,6 +387,44 @@ export default function App() {
   useEffect(() => {
     if (worldLibraryOpen || worldPickerOpen) void reloadLibrary();
   }, [worldLibraryOpen, worldPickerOpen, reloadLibrary]);
+
+  /**
+   * 启动时把世界库里的会话装回侧栏。
+   *
+   * 这一步就是「重启之后会话还在吗」的答案。侧栏的 `stories` 是前端内存状态，
+   * 不读 `library.db` 的话，重启之后就只剩演示故事了——会话其实好好地躺在库里，
+   * 但界面上找不到它（`list_all_sessions`，docs/10 §3）。
+   *
+   * 只放**占位**，不打开世界文件：投影要打开 `.ifworld` 才有，而一次只开一个世界。
+   * 点开某一条时 `loadSession` 才去开它。
+   */
+  useEffect(() => {
+    if (!isNative()) return;
+    let disposed = false;
+    void (async () => {
+      try {
+        const [sessions, library] = await Promise.all([listAllSessions(), listWorlds()]);
+        if (disposed) return;
+        setAssets(library);
+        setLibraryError(null);
+        const byId = new Map(library.map((item) => [item.id, item]));
+        setStories((prev) => {
+          // 幂等：StrictMode 下 effect 会跑两次；而且这一次运行里可能已经打开过某条会话，
+          // 那条的 id 与占位的 id 是同一个字符串，不能叠成两条。
+          const known = new Set(prev.map((item) => item.id));
+          const fresh = sessions
+            .filter((reference) => !known.has(reference.world_file))
+            .map((reference) => placeholderOf(reference, byId.get(reference.asset_id)));
+          return [...fresh, ...prev];
+        });
+      } catch (error) {
+        if (!disposed) setLibraryError(`读取会话列表失败：${describe(error)}`);
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   /**
    * 选中一个资产。**一个世界可以有多个会话**，所以先问一句：已经有会话就让人挑，
@@ -449,6 +571,12 @@ export default function App() {
   /* ---------- send event ---------- */
   const handleSend = (text: string, tag: string) => {
     const sid = story.id;
+    // 占位会话背后没有打开的世界。这时候提交，IF 会落到**上一个**世界上——
+    // 那正是「看起来能用其实没接上」，所以宁可拦住。
+    if (story.session && !story.loaded) {
+      setImportNotice({ tone: 'info', text: '这条会话还没载入，先点一下它，等它载入完再发 IF。' });
+      return;
+    }
     if (nativeWorldStatus === 'open' && window.__TAURI__?.core?.invoke) {
       setBusy(true);
       const ev: Message = { id: uid(), role: 'event', eventTag: tag, content: text, time: now() };
@@ -668,10 +796,49 @@ export default function App() {
 
   const handleSelect = (id: string) => {
     if (busy) handleStop();
+    const target = stories.find((item) => item.id === id);
+    // 占位会话：`go` 只是切内存里的故事，它的投影还没载入——点开时才去开世界文件
+    if (target?.session && !target.loaded) {
+      loadSession(target);
+      return;
+    }
     go(id);
   };
 
+  /**
+   * 删掉一条会话：**后端先删**（引用 + 世界文件），成功了才从侧栏拿掉。
+   *
+   * 反过来先拿掉的话，后端失败会在界面上「删掉了」但重启又回来——那种不一致
+   * 比慢半拍难查得多。
+   */
+  const removeSession = useCallback(async (story: Story) => {
+    const session = story.session;
+    if (!session) return;
+    setBusy(true);
+    try {
+      const remaining = await deleteSession(session.id);
+      const alive = new Set(remaining.map((reference) => reference.world_file));
+      // 别的会话可能已经被删掉了（比如另一个窗口），以返回的列表为准
+      const next = stories.filter((item) => !item.session || alive.has(item.id));
+      const finalList = next.length ? next : [newStory()];
+      setStories(finalList);
+      if (!finalList.some((item) => item.id === activeIdRef.current)) {
+        setActiveId(finalList[0].id);
+      }
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `删除会话失败：${describe(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [stories]);
+
   const handleDelete = (id: string) => {
+    const target = stories.find((item) => item.id === id);
+    // 会话必须连世界库里的那条引用一起删掉，否则重启它又回来了
+    if (target?.session) {
+      void removeSession(target);
+      return;
+    }
     setStories((prev) => {
       const next = prev.filter((s) => s.id !== id);
       if (!next.length) {
@@ -849,7 +1016,7 @@ export default function App() {
         <SessionPicker
           asset={sessionChoice.asset}
           sessions={sessionChoice.sessions}
-          onResume={(session) => { void resumeSession(session, sessionChoice.asset); }}
+          onResume={(session) => { void openSessionById(session.id, sessionChoice.asset); }}
           onNew={() => { void startSession(sessionChoice.asset); }}
           onClose={() => setSessionChoice(null)}
         />

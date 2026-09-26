@@ -69,6 +69,8 @@
 
 - [ ] 将 frontend-example 对齐为 IF 三种动作：IF、观测、继续
 - [x] 实现新建会话流程：选世界 → 有会话时先问用哪个 → 真建 `.ifworld` → 重建世界视图（`WorldPicker` / `SessionPicker`）
+- [x] 会话列表落到界面：启动读 `library.db`（`list_all_sessions`）→ 侧栏列**占位** → 点开才载入世界文件；删除会话连引用与世界文件一起删（`delete_session`）。**修掉「建完会话重启就找不到」的真机 bug**（docs/10 §3.0）。
+- [ ] 把「真实会话」与演示故事（`initialStories`）在侧栏里分开——现在排在同一个列表里
 - [ ] 实现裁定卡、推演卡和按节拍展示
 - [ ] 实现角色、世界、趋势和 IF 导图面板
   - [x] 角色 / 世界名 / 设定条目 / 规则改由**投影**重建（`app/src/projection.ts`），设定条目在「世界」页签下按归段显示。
@@ -82,7 +84,7 @@
   - [x] 裁决确定性、阈值方向、分层排序与趋势转化（`crates/if-policy`，60 项）。
   - [x] 事件重放（`crates/if-judge/tests/replay.rs`）。
   - [x] 事件 ID 分配规则（`crates/if-store/tests/replay.rs`：`next_seq` 与 `append_batch` 一致）与跨 crate 契约（`crates/if-app/src/seed/tests.rs`：预分配的 ID == 实际写出的 ID）。
-  - [x] 播种确定性（`seed.rs`，21 项）与会话创建 / 恢复（`session.rs`，10 项，真实文件 + 真实 SQLite）。
+  - [x] 播种确定性（`seed.rs`，21 项）与会话创建 / 列举 / 恢复 / 删除（`session.rs`，13 项，真实文件 + 真实 SQLite）。
   - [ ] 回合级的端到端重放：同一事件序列 + 同一裁决必须得到同一个投影。
 - [ ] 用真实 Jev / LLM 配置完成一轮端到端演练
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收

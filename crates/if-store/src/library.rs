@@ -780,6 +780,34 @@ impl Library {
         Ok(sessions)
     }
 
+    /// 世界库里**全部**会话，最近的在前。
+    ///
+    /// 与 [`Library::sessions_of_asset`] 分开，不是为了少写一个 `where`：
+    /// 「这台机器上有哪些会话」和「这个资产下有哪些会话」是两个不同的问题。
+    /// 前者是启动时赖以恢复侧栏的问题，按资产问的话 N 个资产就是 N 次往返；
+    /// 而且它天然容得下「会话引用的资产已经不在库里」这种情况——那种会话照样该列出来
+    /// （点开时会报「没有资产」，总比它凭空消失、用户以为数据丢了要好）。
+    pub fn all_sessions(&self) -> Result<Vec<SessionRef>> {
+        let mut stmt = self.conn.prepare(
+            "select id, asset_id, label, world_file, created_at
+             from world_sessions order by created_at desc, id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionRef {
+                id: row.get(0)?,
+                asset_id: AssetId::new(row.get::<_, String>(1)?),
+                label: row.get(2)?,
+                world_file: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(sessions)
+    }
+
     pub fn session_count(&self, id: &AssetId) -> Result<u64> {
         let n: i64 = self.conn.query_row(
             "select count(*) from world_sessions where asset_id = ?1",

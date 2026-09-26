@@ -63,6 +63,8 @@ export interface SessionRef {
 /** Rust `if_app_lib::session::SessionView`。 */
 export interface SessionView {
   snapshot: WorldSnapshot;
+  /** 会话在世界库里的 ID。删除与重新打开都用它。 */
+  session_id: string;
   asset_id: string;
   asset_name: string;
   genre: string;
@@ -78,6 +80,21 @@ export async function createSession(worldId: string, label?: string): Promise<Se
 /** 某个世界已有的会话。 */
 export async function listSessions(worldId: string): Promise<SessionRef[]> {
   return tauriInvoke<SessionRef[]>('list_sessions', { worldId });
+}
+
+/**
+ * 世界库里**全部**会话，最近的在前。
+ *
+ * 启动时靠它把会话列表装回侧栏——只列「本次运行里建过的」等于重启后就找不到了。
+ * 返回的是引用（不是投影）：投影要打开 `.ifworld` 才有，一次只开一个，所以点开才载入。
+ */
+export async function listAllSessions(): Promise<SessionRef[]> {
+  return tauriInvoke<SessionRef[]>('list_all_sessions');
+}
+
+/** 删除一条会话：移出世界库并删掉它的世界文件。返回剩下的会话。 */
+export async function deleteSession(sessionId: string): Promise<SessionRef[]> {
+  return tauriInvoke<SessionRef[]>('delete_session', { sessionId });
 }
 
 /** 恢复已有会话：重启之后回到上一次的进度。 */
