@@ -60,8 +60,10 @@ crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚�
 - `list_sessions(world_id)`：某个世界已有的会话（新建前用它问「要用哪个会话」）。
 - `open_session(session_id)`：从 `world_sessions` 找回 `.ifworld` 重新打开，**不重新播种**。
 - `open_world(path)` / `close_world` / `get_world_snapshot`；`world://opened` / `world://closed` 事件。
-- **没有 `create_world`**——[10 §3](10-世界创建与导入.md) 要求新建会话必须先选世界；
+- **没有 `create_world` 命令**——[10 §3](10-世界创建与导入.md) 要求新建会话必须先选世界；
   「空世界」走世界库的「手动撰写」（那也是一个资产，只是 payload 里没有角色与设定）。
+  ⚠️ 别和 `if-store` 的 **`Store::create_world` 方法**搞混：那个还在（它往事件日志里写
+  `world_created`，是所有世界的起点），被删的只是同名的 Tauri 命令。
 
 **播种**（`if-app::seed`，[10 §3.0](10-世界创建与导入.md)）是「导入 → `if-domain` 确定性映射」的落点：
 
