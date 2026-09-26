@@ -1,0 +1,15 @@
+[package]
+name = "if-views"
+description = "IF 的视图编译：把投影编译成各消费方有资格看到的形式，并给出稳定指纹"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+if-domain.workspace = true
+if-judge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"

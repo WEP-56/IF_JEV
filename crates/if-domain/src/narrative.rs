@@ -154,13 +154,23 @@ impl Tendency {
         probability: f64,
         source: impl Into<EventId>,
     ) -> Self {
+        let mut tendency = Self::latent(id, text, probability);
+        tendency.contributors.push(source.into());
+        tendency
+    }
+
+    /// 同 [`Tendency::from_failed_candidate`]，但先不挂贡献事件。
+    ///
+    /// 裁决发生在事件提交**之前**——预演阶段被否决的候选要到回合收尾才谈得上
+    /// 「由哪个事件引起」。这时候硬要一个 `EventId` 只会逼调用方编一个。
+    pub fn latent(id: impl Into<TendencyId>, text: impl Into<String>, probability: f64) -> Self {
         Self {
             id: id.into(),
             text: text.into(),
             target: String::new(),
             pressure: probability * TENDENCY_INITIAL_PRESSURE_FACTOR,
             threshold: TENDENCY_ERUPT_THRESHOLD,
-            contributors: vec![source.into()],
+            contributors: Vec::new(),
             status: TendencyStatus::Latent,
         }
     }
@@ -480,6 +490,15 @@ mod tests {
         let mut dying = Tendency::from_failed_candidate("tnd_2", "x", 0.2, "evt_1");
         dying.push(-0.5);
         assert_eq!(dying.status, TendencyStatus::Dissolved);
+    }
+
+    #[test]
+    fn latent_tendency_has_no_contributor_yet() {
+        let t = Tendency::latent("tnd_1", "顾言开始怀疑林夏", 0.5);
+        assert!(t.contributors.is_empty());
+        assert!((t.pressure - 0.25).abs() < 1e-9);
+        assert_eq!(t.status, TendencyStatus::Latent);
+        assert_eq!(t.threshold, TENDENCY_ERUPT_THRESHOLD);
     }
 
     #[test]

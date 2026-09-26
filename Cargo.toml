@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/if-domain",
+    "crates/if-views",
+    "crates/if-policy",
     "crates/if-store",
     "crates/if-judge",
     "crates/if-agent",
@@ -17,6 +19,8 @@ repository = "https://github.com/WEP-56/IF_JEV"
 
 [workspace.dependencies]
 if-domain = { path = "crates/if-domain" }
+if-views = { path = "crates/if-views" }
+if-policy = { path = "crates/if-policy" }
 if-agent = { path = "crates/if-agent" }
 if-judge = { path = "crates/if-judge" }
 if-store = { path = "crates/if-store" }

@@ -67,6 +67,15 @@ pub enum CandidateShape {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub id: CandidateId,
+    /// **稳定决策键**：跨世界线不变的语义标识，命运骰子按它取值（docs/03 §8）。
+    ///
+    /// 形如 `c_gu.notices.c_lin_abnormal`（状态候选，用被影响命题的键）或
+    /// `c_lin.reaction_to_feeling`（互斥选择点）。规则见 [`Candidate::decision_key`]。
+    ///
+    /// 这个字段是「骰子 0.55，旧线 p = 0.41 → 未发生；新线 p = 0.72 → 发生」
+    /// 能成立的前提：候选 ID 是回合内分配的，两条世界线上并不相同，不能拿它当键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// 候选作用于哪个主体。世界事件可以没有主体。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<SubjectId>,
@@ -83,6 +92,33 @@ pub struct Candidate {
     /// 影响的命题。
     #[serde(default)]
     pub affects: Vec<PropositionId>,
+}
+
+impl Candidate {
+    /// 稳定决策键（docs/03 §8）。优先用 LLM 给出的 `key`，没有则退到**首个被影响命题**
+    /// 的规范键——状态候选的键就是它所影响的命题键（`<命题键>@<世界时间段>`）。
+    ///
+    /// 返回 `None` 表示这个候选没有跨世界线的稳定标识。引擎不该拿候选 ID 去顶替：
+    /// 候选 ID 是回合内分配的，两条世界线上并不相同，用它当键会让「同一个决策
+    /// 在两条线上用同一颗骰子」这条性质失效。
+    pub fn decision_key<F>(&self, proposition_key: F) -> Option<String>
+    where
+        F: Fn(&PropositionId) -> Option<String>,
+    {
+        if let Some(key) = &self.key {
+            return Some(key.clone());
+        }
+        let first = self.affects.first()?;
+        proposition_key(first)
+    }
+
+    /// 互斥组携带的选项；不是互斥组时返回 `None`。
+    pub fn options(&self) -> Option<&[String]> {
+        match &self.shape {
+            CandidateShape::Exclusive { options } => Some(options),
+            CandidateShape::Occurs => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 判定
@@ -184,6 +220,10 @@ pub enum ResolutionPolicy {
     Threshold,
     /// 带种子的抽样：发生类。
     SeededSample,
+    /// 带种子的**分类**抽样：互斥类。整组只抽一次，选项按 ID 排序后累加分布
+    /// （docs/06 §3）。与 [`ResolutionPolicy::SeededSample`] 的区别在于结果是
+    /// 「选中了哪一个」而不是「是否发生」。
+    SeededCategorical,
     /// 加权选择：导演调度。
     WeightedSelect,
     /// 数值输入：强度类，直接参与计算。
@@ -218,16 +258,20 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    /// 阈值裁决：不掷骰，只比阈值。
-    pub fn by_threshold(target: impl Into<String>, probability: f64, threshold: f64) -> Self {
+    /// 阈值裁决：不掷骰（docs/06 §1 硬规则：约束类的概率永远不拿去掷骰）。
+    ///
+    /// `passed` 是**放行与否**，由调用方按模板的方向算出来——阈值在不同模板上方向相反：
+    /// `q.beat.violates_fact` 概率越高越可疑，`q.cand.in_character` 概率越高越可靠。
+    /// 所以这里不接受概率去做比较：那等于把方向偷偷钉死成「越高越通过」，
+    /// 而在合规检查上方向写反只会静默放过违规正文。
+    /// 方向表与比较都在 `if-policy` 的 `threshold` 模块里。
+    pub fn by_threshold(target: impl Into<String>, passed: bool) -> Self {
         Self {
             target: target.into(),
             policy: ResolutionPolicy::Threshold,
             decision_key: None,
             die: None,
-            outcome: ResolutionOutcome::Accepted {
-                accepted: probability >= threshold,
-            },
+            outcome: ResolutionOutcome::Accepted { accepted: passed },
         }
     }
 
@@ -246,6 +290,52 @@ impl Resolution {
             outcome: ResolutionOutcome::Accepted {
                 accepted: die < probability,
             },
+        }
+    }
+
+    /// 带种子的分类抽样：互斥类。整组共用一颗骰子，选中 `option`（docs/06 §3）。
+    pub fn by_categorical(
+        target: impl Into<String>,
+        option: impl Into<String>,
+        decision_key: impl Into<String>,
+        die: f64,
+    ) -> Self {
+        Self {
+            target: target.into(),
+            policy: ResolutionPolicy::SeededCategorical,
+            decision_key: Some(decision_key.into()),
+            die: Some(die),
+            outcome: ResolutionOutcome::Selected {
+                option: option.into(),
+            },
+        }
+    }
+
+    /// 数值裁决：强度类与机制步。保留骰子值，便于复现（docs/06 §8）。
+    pub fn by_value(
+        target: impl Into<String>,
+        value: f64,
+        decision_key: impl Into<String>,
+        die: f64,
+    ) -> Self {
+        Self {
+            target: target.into(),
+            policy: ResolutionPolicy::Numeric,
+            decision_key: Some(decision_key.into()),
+            die: Some(die),
+            outcome: ResolutionOutcome::Value { value },
+        }
+    }
+
+    /// 这次裁决是否放行。
+    ///
+    /// 只有 `Accepted` 有「放行 / 否决」这一说；`Selected` 与 `Value` 总是放行，
+    /// 内容本身在别的字段里。调用方不该拿 `outcome == Accepted{false}` 以外的方式
+    /// 判断否决——否则互斥组会被误判成「什么都没发生」。
+    pub fn accepted(&self) -> bool {
+        match &self.outcome {
+            ResolutionOutcome::Accepted { accepted } => *accepted,
+            ResolutionOutcome::Selected { .. } | ResolutionOutcome::Value { .. } => true,
         }
     }
 }
@@ -442,10 +532,13 @@ mod tests {
 
     #[test]
     fn threshold_resolution_has_no_die() {
-        let r = Resolution::by_threshold("q.beat.violates_fact", 0.88, 0.3);
+        // p = 0.88 ≥ τ = 0.3 → 判为「违反锁定事实」→ 不放行
+        let r = Resolution::by_threshold("q.beat.violates_fact", false);
         assert_eq!(r.policy, ResolutionPolicy::Threshold);
         assert!(r.die.is_none());
-        assert_eq!(r.outcome, ResolutionOutcome::Accepted { accepted: true });
+        assert!(r.decision_key.is_none());
+        assert!(!r.accepted());
+        assert_eq!(r.outcome, ResolutionOutcome::Accepted { accepted: false });
     }
 
     #[test]
@@ -473,5 +566,58 @@ mod tests {
             });
         }
         assert!((turn.jev_cost() - 0.0000378).abs() < 1e-12);
+    }
+
+    #[test]
+    fn candidate_decision_key_prefers_explicit_then_affected_proposition() {
+        let mut candidate = Candidate {
+            id: CandidateId::new("cand_1"),
+            key: None,
+            subject: Some(SubjectId::new("c_gu")),
+            content: "顾言注意到林夏的异常".into(),
+            internal: false,
+            shape: CandidateShape::Occurs,
+            depends_on: vec![],
+            based_on: vec![],
+            affects: vec![PropositionId::new("p_notices")],
+        };
+        // 没有显式键时，退到首个被影响命题的规范键
+        assert_eq!(
+            candidate.decision_key(|p| {
+                (p.as_str() == "p_notices").then(|| "c_gu.notices.c_lin_abnormal".to_string())
+            }),
+            Some("c_gu.notices.c_lin_abnormal".to_string())
+        );
+        // 显式键优先
+        candidate.key = Some("c_gu.notices@override".into());
+        assert_eq!(
+            candidate.decision_key(|_| Some("ignored".into())),
+            Some("c_gu.notices@override".to_string())
+        );
+        // 既没有显式键、也没有可解析的被影响命题 → 没有稳定键，不能拿 ID 顶替
+        candidate.key = None;
+        candidate.affects.clear();
+        assert_eq!(candidate.decision_key(|_| Some("x".into())), None);
+    }
+
+    #[test]
+    fn categorical_resolution_selects_an_option() {
+        let r = Resolution::by_categorical(
+            "cand_007",
+            "delay",
+            "c_lin.reaction_to_feeling@D7",
+            0.51,
+        );
+        assert_eq!(r.policy, ResolutionPolicy::SeededCategorical);
+        assert_eq!(r.die, Some(0.51));
+        assert_eq!(
+            r.outcome,
+            ResolutionOutcome::Selected {
+                option: "delay".into()
+            }
+        );
+        // 选中总是放行：否决只由 Accepted{false} 表示
+        assert!(r.accepted());
+        assert!(!Resolution::by_die("cand_1", 0.41, "k@D7", 0.55).accepted());
     }
 }

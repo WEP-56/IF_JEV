@@ -1,0 +1,17 @@
+[package]
+name = "if-policy"
+description = "IF 的确定性裁决策略：阈值、命运骰子、分层裁决、观察带与导演评分"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+if-domain.workspace = true
+if-views.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

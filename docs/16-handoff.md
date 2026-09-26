@@ -1,7 +1,7 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-26**（此前的版本落后于代码，已按工作区实际情况重写）。
+> 最后核对：**2026-09-26**（此前的版本落后于代码，已按工作区实际情况重写；`if-views` / `if-policy` 落地后再次核对）。
 
 ## 1. 项目定位
 
@@ -24,13 +24,17 @@ app/                    React + TypeScript + Vite 前端
 crates/if-app/          Tauri 命令、事件、设置、密钥、世界工作线程、IF 预解析、酒馆导入
   src/importer/         酒馆角色卡 / 世界书导入（card / lorebook / png / model / value）
 crates/if-domain/       领域类型、事件补丁、投影、世界线、回合记录、裁定卡
+crates/if-views/        视图编译、可见性判定、预算裁剪、稳定指纹
+crates/if-policy/       阈值表、命运骰子、分层裁决、观察带与趋势、导演评分
 crates/if-store/        SQLite 事件日志、投影、快照、世界线
 crates/if-agent/        Agent loop、provider、工具 schema
 crates/if-judge/        Jev、LLM 裁判、测试桩与重试
 docs/                   正式设计与工程文档
 ```
 
-crate 划分见 [12 §3](12-工程架构.md)。`if-views` / `if-policy` / `if-lore` / `if-pipeline` **尚未创建**。
+crate 划分见 [12 §3](12-工程架构.md)。`if-lore` / `if-pipeline` **尚未创建**；
+已落地 crate 之间的依赖是单向的 `if-domain → if-views → if-policy`，
+`if-pipeline` 建成后依赖全部四者。
 
 关键原则：
 
@@ -63,6 +67,12 @@ IF 流程（**裁定卡生命周期已实现**）：
 - `examples/inspect_card.rs`：对真实卡文件做导入体检（`cargo run -p if-app --example inspect_card -- <文件...>`），确定性、不联网、不落盘。
 - 诊断：`test_llm` / `probe_jev` / `test_judge`。
 
+裁决与视图（纯计算、无网络，尚未接入回合流程）：
+
+- `if-views`：把投影编译成「某个消费方有资格看到的形式」。八种视图（parse / god / director / pov / narration / check / player / creation）的状态装配、预算裁剪、`public / private / secret` 可见性判定外加 L1 保护期，以及判定记录要存的稳定指纹。P9（视角隔离）的唯一落点就在这里。
+- `if-policy`：阈值表（docs/06 §2，含一致性严格度的线性收紧与上下限夹紧）、命运骰子的决策键生成与抽样（发生类 / 互斥类 / 数值机制）、按 `depends_on` 的分层拓扑排序（≤3 层因果深度，超出的推迟或转趋势）、观察带与趋势转化（`p ≥ τ_watch` → 初始压力 `p × 0.5`）、导演评分与场景选择。
+- 两者都只被单元测试覆盖，**还没有调用方**——接进回合流程是 `if-pipeline` 的活。
+
 ### 前端
 
 - Tauri 启动时读取世界快照，顶部栏显示真实世界名和事件序号。
@@ -75,7 +85,7 @@ IF 流程（**裁定卡生命周期已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 145 个测试通过
+cargo test --workspace              # 当前 238 个测试通过
 
 cd E:\IF\app
 npx tsc --noEmit
@@ -84,6 +94,9 @@ npm run tauri dev                   # 需要桌面验收时
 ```
 
 > ⚠️ 2026-09-26 实测更正：`cargo` **可以在 Git Bash 里直接跑**（`cargo check -p if-domain` 13s 通过），旧笔记里「cargo 会静默死掉」的说法不再成立。
+> 若用工具调用，把输出重定向到文件再读最稳：`cargo test --workspace > /tmp/t.log 2>&1`。
+> 构建日志里每个 crate 一条 `hard linking files in the incremental compilation cache failed`
+> 是 `E:` 盘不支持硬链接导致的，与代码无关。
 
 桌面验收可用（IF 预解析）：
 
@@ -103,7 +116,9 @@ IF 骑士一直是失踪的王储
 - `LoreSection::Style` 已存在但没有**任何**自动映射：真实卡的 `position` 只区分角色定义前后，归段靠 T-parse 或用户指定。
 - 导入结果**尚未持久化**：没有独立的世界资产表 / 文件格式，世界库仍是前端内存态，刷新即丢。
 - 尚无裁定卡 **UI**（Rust 侧命令与 domain 类型已具备）。
-- 尚无候选生成、分层裁决、命运骰子、场景计划、节拍检查、正文回收和提交闭环。
+- `if-views` / `if-policy` 已落地且单测全绿，但**没有任何调用方**。也就是说：
+  「谁有权看到哪些事实」和「概率怎么变成结果」两件事都已经能算，只是回合流程还没去用它们。
+- 尚无候选生成、场景计划、节拍检查、正文回收和提交闭环——这些属于尚未创建的 `if-pipeline`。
 - 前端目前仍以演示故事为主要视觉数据源，真实投影尚未映射成角色 / 世界 / 导图面板。
 - `open_world` 已有命令，但前端尚未提供世界文件选择器。
 
@@ -118,6 +133,13 @@ IF 骑士一直是失踪的王储
 - ✅ 公开 CC BY 样本纳入回归（`crates/if-app/tests/fixtures/`）。
 - ✅ 真实 PNG 卡（spec 3.0）体检并按实测行为修正导入器：字段分层回退、`extensions.position` 优先归段、定时效果零值判定、空条目跳过提示、去掉臆造的 `genre`（[13 §6.4](13-酒馆兼容.md)）。
 
+### 已完成：harness 的确定性两层（视图编译 + 裁决策略）
+
+- ✅ `if-views`：八种视图的状态装配、预算裁剪、可见性判定（`public` / `private` / `secret` + L1 保护期）、稳定指纹。P9 的落点。
+- ✅ `if-policy`：阈值表与一致性严格度、命运骰子（决策键 + 抽样）、分层拓扑排序、观察带与趋势转化、导演评分与场景选择。
+- ✅ 两处 domain 缺口一并补上：`Candidate::key`（稳定决策键，跨世界线不变）、`ResolutionPolicy::SeededCategorical`（docs/06 §1 的互斥类策略原本在枚举里是缺的）。
+- ⚠️ 都还没有调用方，也没接真实 Jev——它们只被单元测试覆盖。
+
 ### 下一步（按优先级）
 
 1. **世界资产持久化**：`if-store` 增加独立的世界资产表 / 文件格式；世界资产不能复用会话 `world_created` 事件，也不能在新建会话时隐式创建世界。导入确认后写入，并在重启后仍可见。
@@ -125,7 +147,9 @@ IF 骑士一直是失踪的王储
 3. **真实文件补测（剩余）**：独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、含 V3 扩展字段的真实卡、带装饰器的卡——由用户提供（[13 §6.3](13-酒馆兼容.md)）。
 4. **导入 → 世界模型的确定性映射**：把 `ImportedWorld` 转成 `if-domain` 的主体 / 设定条目 / 规则草案，再接 T-parse 与 `q.extract.faithful` 校验。
 5. **裁定卡 UI**：把已有的 pending / confirm / cancel / reinterpret 命令接到前端。
-6. **一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。第一版可先用 Judge stub + scripted provider 全流程跑通，再接真实 LLM/Jev。
+6. **`if-pipeline`：一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。
+   - 裁决与视图两层已经就绪（`if-policy` / `if-views`），本阶段要写的是**编排**：任务定义、`IfTaskHost`、工具实现、失败兜底，以及把 Jev 的判定喂进 `Policy::run`。
+   - 第一版用 Judge stub + scripted provider 全流程跑通，再接真实 LLM/Jev。
 7. **真实投影前端化** → **视图隔离与 v1 验收**（[15](15-v1范围.md)）。
 
 ## 6. 接手时先读什么
@@ -137,7 +161,10 @@ IF 骑士一直是失踪的王储
 3. [15 v1 范围](15-v1范围.md)；
 4. [13 酒馆兼容](13-酒馆兼容.md)（酒馆适配的字段依据，§0.1 的双方言表是重点）；
 5. [10 世界库与导入](10-世界创建与导入.md) §2 / §7；
-6. [04 回合流程](04-回合流程.md)、[01 IF 规则](01-IF规则.md)、[03 事件与世界线](03-事件与世界线.md)；
-7. 代码：`crates/if-app/src/importer/`、`world_worker.rs`、`app/src/App.tsx`。
+6. [04 回合流程](04-回合流程.md)、[01 IF 规则](01-IF规则.md)、[03 事件与世界线](03-事件与世界线.md)、[06 裁决策略](06-裁决策略.md)、[08 视图与世界书](08-视图与世界书.md)；
+7. 代码：`crates/if-app/src/importer/`、`world_worker.rs`、`app/src/App.tsx`；
+8. 若要接回合流程，先读 `crates/if-views/src/`（视图与可见性）与 `crates/if-policy/src/`
+   （阈值表、命运骰子、分层裁决、导演评分）——它们是纯计算层，读起来没有副作用，
+   接的时候只需要「喂输入、取输出」。
 
 不要从旧会话推断产品状态；以仓库文档、测试和当前工作区代码为准。真实账号、真实 Jev/LLM 和主观 UI/叙事验收仍由用户执行。
