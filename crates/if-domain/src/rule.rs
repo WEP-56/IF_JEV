@@ -145,7 +145,7 @@ impl Condition {
     {
         match self {
             Condition::Compare { prop, cmp, value } => {
-                lookup(prop).map_or(false, |current| cmp.test(current, *value))
+                lookup(prop).is_some_and(|current| cmp.test(current, *value))
             }
             Condition::All { all } => all.iter().all(|c| c.evaluate(lookup)),
             Condition::Any { any } => any.iter().any(|c| c.evaluate(lookup)),

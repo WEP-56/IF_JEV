@@ -264,7 +264,7 @@ impl ViewState {
         // 只剩主体、事实、规则，还是超预算：按锁定等级丢掉最弱的事实。
         if self.json_len() > budget {
             self.subjects.clear();
-            self.facts.sort_by(|a, b| b.lock_rank.cmp(&a.lock_rank));
+            self.facts.sort_by_key(|f| std::cmp::Reverse(f.lock_rank));
             while self.json_len() > budget && !self.facts.is_empty() {
                 self.facts.pop();
             }

@@ -95,8 +95,10 @@ impl WorldWorker {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos() as u64;
-                        let mut settings = WorldSettings::default();
-                        settings.seed = seed;
+                        let settings = WorldSettings {
+                            seed,
+                            ..Default::default()
+                        };
                         store
                             .create_world(&label, settings)
                             .map_err(|e| e.to_string())?;

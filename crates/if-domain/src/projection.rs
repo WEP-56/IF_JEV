@@ -385,7 +385,7 @@ impl Projection {
         let scene = self.current_scene_index();
         self.facts
             .get(prop)
-            .map_or(false, |f| f.is_protected_at(scene))
+            .is_some_and(|f| f.is_protected_at(scene))
     }
 
     /// 公开事实的数量，供快速体检与测试断言。

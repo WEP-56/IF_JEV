@@ -434,14 +434,14 @@ mod tests {
         let lin = SubjectId::new("c_lin");
         let none = BTreeMap::new();
         // 完全没出场 → 缺额 1
-        assert!((character_balance(&[gu.clone()], &none, 6) - 1.0).abs() < 1e-9);
+        assert!((character_balance(std::slice::from_ref(&gu), &none, 6) - 1.0).abs() < 1e-9);
         // 一直在场 → 缺额 0
         let recent = BTreeMap::from([(gu.clone(), 6_u64), (lin.clone(), 6_u64)]);
         assert!((character_balance(&[gu.clone(), lin.clone()], &recent, 6) - 0.0).abs() < 1e-9);
         // 顾言只出场一半（缺额 0.5）、林夏全程在场（缺额 0）→ 平均 0.25
         let half = BTreeMap::from([(gu.clone(), 3_u64), (lin.clone(), 6_u64)]);
         assert!((character_balance(&[gu.clone(), lin.clone()], &half, 6) - 0.25).abs() < 1e-9);
-        assert!((character_balance(&[gu.clone()], &half, 6) - 0.5).abs() < 1e-9);
+        assert!((character_balance(std::slice::from_ref(&gu), &half, 6) - 0.5).abs() < 1e-9);
         // 出场次数超过窗口也要夹到 1
         let over = BTreeMap::from([(gu.clone(), 99_u64)]);
         assert!((character_balance(&[gu], &over, 6) - 0.0).abs() < 1e-9);

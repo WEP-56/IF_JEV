@@ -73,7 +73,7 @@ impl Fact {
 
     /// 在给定场景序号上是否仍处于 L1 保护期。
     pub fn is_protected_at(&self, scene_index: u64) -> bool {
-        self.lock == Lock::L1 && self.protected_until.map_or(false, |end| scene_index < end)
+        self.lock == Lock::L1 && self.protected_until.is_some_and(|end| scene_index < end)
     }
 }
 

@@ -434,7 +434,7 @@ impl Store {
             old,
             target_seq,
             WorldLineKind::Branch,
-            &format!("{}（回滚自 seq {target_seq}）", old.label),
+            format!("{}（回滚自 seq {target_seq}）", old.label),
         );
         self.upsert_world_line(&fresh)?;
         self.set_meta(meta_key::ACTIVE_LINE, fresh.id.as_str())?;
