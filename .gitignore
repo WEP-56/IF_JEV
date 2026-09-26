@@ -28,6 +28,8 @@ jevkey.txt
 .workbuddy/
 ai-agent-example/
 frontend-example/
+# 社区真实卡样本：只作本地导入体检用，版权不属于本仓库，不入库（见 docs/13 §6.4）
+sk-example/
 
 # Local databases and runtime data
 **/*.ifworld

@@ -42,7 +42,7 @@ export default function WorldLibrary({ worlds, onClose, onCreate, onImport, onDe
           <article key={world.id} className="flex min-h-[180px] flex-col rounded-xl border border-line bg-elev p-4">
             <div className="flex items-start gap-3">
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-accent/15 text-accent"><BookOpen size={19} /></div>
-              <div className="min-w-0 flex-1"><h2 className="truncate text-[14px] font-semibold">{world.name}</h2><p className="mt-0.5 text-[11px] text-muted">{world.genre} · {world.source === 'imported' ? '已导入' : world.source === 'written' ? '手动撰写' : '示例资产'}</p></div>
+              <div className="min-w-0 flex-1"><h2 className="truncate text-[14px] font-semibold">{world.name}</h2><p className="mt-0.5 text-[11px] text-muted">{[world.genre, world.source === 'imported' ? '已导入' : world.source === 'written' ? '手动撰写' : '示例资产'].filter(Boolean).join(' · ')}</p></div>
             </div>
             <p className="mt-3 line-clamp-3 text-[12px] leading-5 text-fg/75">{world.summary || '暂无简介'}</p>
             <div className="mt-auto flex items-center justify-between pt-4 text-[11px] text-muted"><span>{world.characters.length} 个主体</span><span>{world.updated}</span></div>

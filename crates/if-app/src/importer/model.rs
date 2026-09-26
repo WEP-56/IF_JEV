@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 设定条目在 IF 上下文中的归段。映射依据 docs/13 §2 的 `position` 行。
+///
+/// 注意：卡内嵌 `character_book` 的顶层 `position` 只有 `before_char` / `after_char`，
+/// 推导不出 `Scene` / `Style`；实测两张真实卡里 `Style` 内容（`style_guide:` 开头的条目、
+/// 文风指导）只能用内容判定，因此 `Style` 目前**没有任何自动映射**，由 T-parse 或用户指定。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoreSection {
@@ -18,6 +22,8 @@ pub enum LoreSection {
     Character,
     /// 场景层：@深度插入（IF 没有聊天深度的概念，统一收敛到场景段）。
     Scene,
+    /// 文风层：写作指导、语言质感、句式节奏（docs/02 §9 的 `style`）。
+    Style,
 }
 
 /// 主 / 次关键词的组合逻辑，对应酒馆 `selectiveLogic` 0–3（docs/13 §2【已核实】）。

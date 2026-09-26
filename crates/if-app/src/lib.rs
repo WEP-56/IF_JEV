@@ -5,7 +5,8 @@
 
 mod diagnostics;
 mod if_parser;
-mod importer;
+// 对 `examples/inspect_card` 暴露，便于对真实卡文件做导入体检。
+pub mod importer;
 mod secrets;
 mod settings;
 mod world_worker;

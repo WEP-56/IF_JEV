@@ -59,7 +59,8 @@ IF 流程（**裁定卡生命周期已实现**）：
 解析与导入（确定性、无网络）：
 
 - `parse_if` / `parse_if_model`：IF 预解析，输出导演指令标记、类型初判、时间锚点、作用范围、锁定建议、不承诺项与警告。
-- `import_world_json` / `import_world_file`：酒馆导入。自动识别 PNG（`chara` / `ccv3` 文本块，优先 `ccv3`）与 UTF-8 JSON；同时兼容 CCv3 规范与酒馆运行时两套字段方言；含装饰器剥离、`position` → 归段映射、宏检测（`{{user}}` 等）。
+- `import_world_json` / `import_world_file`：酒馆导入。自动识别 PNG（`chara` / `ccv3` 文本块，优先 `ccv3`）与 UTF-8 JSON；同时兼容 CCv3 规范与酒馆运行时两套字段方言；含装饰器剥离、`position` → 归段映射、宏检测（`{{user}}` 等）。条目字段按「顶层 → `extensions`」分层读取（真实卡把引擎状态放在 `extensions`，见 [13 §6.4](13-酒馆兼容.md)）。
+- `examples/inspect_card.rs`：对真实卡文件做导入体检（`cargo run -p if-app --example inspect_card -- <文件...>`），确定性、不联网、不落盘。
 - 诊断：`test_llm` / `probe_jev` / `test_judge`。
 
 ### 前端
@@ -74,7 +75,7 @@ IF 流程（**裁定卡生命周期已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 141 个测试通过
+cargo test --workspace              # 当前 145 个测试通过
 
 cd E:\IF\app
 npx tsc --noEmit
@@ -99,6 +100,7 @@ IF 骑士一直是失踪的王储
 
 - `parse_if` 与 `import_world_*` 都是**启发式 / 确定性**的，不调用真实结构模型；`parse_if` 也不做 Jev 忠实度判定。
 - 导入的**语义抽取**（主体 / 事实 / 规则 / 故事线）尚未实现——导入结果只是忠实的规范化记录 + warnings。
+- `LoreSection::Style` 已存在但没有**任何**自动映射：真实卡的 `position` 只区分角色定义前后，归段靠 T-parse 或用户指定。
 - 导入结果**尚未持久化**：没有独立的世界资产表 / 文件格式，世界库仍是前端内存态，刷新即丢。
 - 尚无裁定卡 **UI**（Rust 侧命令与 domain 类型已具备）。
 - 尚无候选生成、分层裁决、命运骰子、场景计划、节拍检查、正文回收和提交闭环。
@@ -114,15 +116,17 @@ IF 骑士一直是失踪的王储
 - ✅ 双方言世界书条目归一化 + 装饰器剥离 + `position` → 归段。
 - ✅ 导入预览 UI 与 IPC 接线。
 - ✅ 公开 CC BY 样本纳入回归（`crates/if-app/tests/fixtures/`）。
+- ✅ 真实 PNG 卡（spec 3.0）体检并按实测行为修正导入器：字段分层回退、`extensions.position` 优先归段、定时效果零值判定、空条目跳过提示、去掉臆造的 `genre`（[13 §6.4](13-酒馆兼容.md)）。
 
 ### 下一步（按优先级）
 
 1. **世界资产持久化**：`if-store` 增加独立的世界资产表 / 文件格式；世界资产不能复用会话 `world_created` 事件，也不能在新建会话时隐式创建世界。导入确认后写入，并在重启后仍可见。
-2. **真实文件补测**：真实 PNG 卡、V3 扩展字段卡、独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON——由用户提供（见 [13 §6.3](13-酒馆兼容.md)）。
-3. **导入 → 世界模型的确定性映射**：把 `ImportedWorld` 转成 `if-domain` 的主体 / 设定条目 / 规则草案，再接 T-parse 与 `q.extract.faithful` 校验。
-4. **裁定卡 UI**：把已有的 pending / confirm / cancel / reinterpret 命令接到前端。
-5. **一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。第一版可先用 Judge stub + scripted provider 全流程跑通，再接真实 LLM/Jev。
-6. **真实投影前端化** → **视图隔离与 v1 验收**（[15](15-v1范围.md)）。
+2. **条目 `origin` 字段**：来源类型 + 来源卡 / 文件 + 条目 uid + 卡版本，用于「重新导入同一张卡时按来源整组替换」与多卡合并去重（[13 §0.2](13-酒馆兼容.md)）。
+3. **真实文件补测（剩余）**：独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、含 V3 扩展字段的真实卡、带装饰器的卡——由用户提供（[13 §6.3](13-酒馆兼容.md)）。
+4. **导入 → 世界模型的确定性映射**：把 `ImportedWorld` 转成 `if-domain` 的主体 / 设定条目 / 规则草案，再接 T-parse 与 `q.extract.faithful` 校验。
+5. **裁定卡 UI**：把已有的 pending / confirm / cancel / reinterpret 命令接到前端。
+6. **一个可提交的 IF 回合**：按 [04](04-回合流程.md) 实现 T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 → 逐节拍检查 → Proposed / Observed / Committed 对账。第一版可先用 Judge stub + scripted provider 全流程跑通，再接真实 LLM/Jev。
+7. **真实投影前端化** → **视图隔离与 v1 验收**（[15](15-v1范围.md)）。
 
 ## 6. 接手时先读什么
 

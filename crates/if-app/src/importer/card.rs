@@ -65,7 +65,8 @@ pub fn parse_character_card(root: &Value) -> Result<ImportedWorld, String> {
 
     let mut world = ImportedWorld {
         name: name.clone(),
-        genre: "待整理".into(),
+        // 导入器不臆造题材：卡里没有题材字段，留空由用户在世界库里补（docs/10 §5）。
+        genre: String::new(),
         summary: character.scenario.clone(),
         source_format: if spec.is_empty() { FORMAT_V1.to_owned() } else { spec.clone() },
         source_kind: "json".into(),
@@ -109,10 +110,15 @@ pub fn parse_character_card(root: &Value) -> Result<ImportedWorld, String> {
 
     if let Some(book) = data.get("character_book").filter(|value| value.is_object()) {
         let entries = book.get("entries").unwrap_or(book);
-        world.lore = lorebook::parse_entries(entries);
+        let (lore, skipped) = lorebook::parse_entries_counting(entries);
+        world.lore = lore;
         world.lore_meta = lorebook::parse_meta(book);
         if world.lore.is_empty() {
             world.push_warning("character_book 存在，但没有解析出可用条目（可能全部缺少 content）。");
+        } else if skipped > 0 {
+            world.push_warning(format!(
+                "character_book 有 {skipped} 条条目没有正文，已跳过（通常是卡作者清空内容的残留）。"
+            ));
         }
     }
     let sustainability = lorebook::sustainability_warnings(&world.lore);
@@ -132,14 +138,14 @@ pub fn parse_lorebook_document(root: &Value, source_format: &str) -> Result<Impo
         .get("entries")
         .or_else(|| data.get("world_info"))
         .unwrap_or(data);
-    let lore = lorebook::parse_entries(entries);
+    let (lore, skipped) = lorebook::parse_entries_counting(entries);
     if lore.is_empty() {
         return Err("世界书没有可识别的 entries".into());
     }
     let name = text(data, "name");
     let mut world = ImportedWorld {
         name: if name.trim().is_empty() { "导入的世界书".into() } else { name },
-        genre: "待整理".into(),
+        genre: String::new(),
         summary: format!("导入 {} 条世界书设定", lore.len()),
         source_format: source_format.to_owned(),
         source_kind: "json".into(),
@@ -152,6 +158,11 @@ pub fn parse_lorebook_document(root: &Value, source_format: &str) -> Result<Impo
         source_fields: object_keys(data),
         warnings: Vec::new(),
     };
+    if skipped > 0 {
+        world.push_warning(format!(
+            "世界书有 {skipped} 条条目没有正文，已跳过（通常是作者清空内容的残留）。"
+        ));
+    }
     let sustainability = lorebook::sustainability_warnings(&world.lore);
     for warning in sustainability {
         world.push_warning(warning);

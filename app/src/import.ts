@@ -6,7 +6,7 @@
  */
 import type { Character, World, WorldAsset } from './types';
 
-export type LoreSection = 'world' | 'character' | 'scene';
+export type LoreSection = 'world' | 'character' | 'scene' | 'style';
 export type LoreLogic = 'and_any' | 'not_all' | 'not_any' | 'and_all';
 export type LoreRole = 'system' | 'user' | 'assistant';
 
@@ -107,7 +107,7 @@ export function formatLabel(format: string): string {
 
 /** 归段的可读标签。 */
 export function sectionLabel(section: LoreSection): string {
-  return { world: '世界段', character: '角色段', scene: '场景段' }[section];
+  return { world: '世界段', character: '角色段', scene: '场景段', style: '文风段' }[section];
 }
 
 /** 逻辑的可读标签。 */
@@ -152,7 +152,8 @@ export function toCharacter(imported: ImportedCharacter, index: number): Charact
 export function toWorld(imported: ImportedWorld): World {
   return {
     name: imported.name,
-    genre: imported.genre || '待整理',
+    // 卡里没有题材字段；不填占位值，空着由用户补。渲染层负责省略空段。
+    genre: imported.genre,
     era: '—',
     day: 0,
     summary: imported.summary,
@@ -167,7 +168,7 @@ export function toWorldAsset(imported: ImportedWorld, id: string, updated: strin
   return {
     id,
     name: imported.name,
-    genre: imported.genre || '待整理',
+    genre: imported.genre,
     summary: imported.summary || `来源：${imported.source_file ?? imported.source_kind}`,
     source: 'imported',
     characters: imported.characters.map(toCharacter),

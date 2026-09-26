@@ -14,15 +14,23 @@
 use serde_json::Value;
 
 use super::model::{ImportedLore, LoreLogic, LoreRole, LoreSection};
-use super::value::{flag, number, optional_flag, strings, text, to_i32};
+use super::value::{
+    flag, number, optional_flag, pick_flag, pick_number, pick_positive, pick_strings, pick_text,
+    text, to_i32,
+};
 
 /// 方言标记：CCv3 规范字段。
 const DIALECT_CCV3: &str = "ccv3";
 /// 方言标记：酒馆运行时 World Info 导出。
 const DIALECT_WORLD_INFO: &str = "world_info";
 
-/// 解析一组条目。接受数组（CCv3）或 `uid → entry` 对象（酒馆运行时导出）。
-pub fn parse_entries(value: &Value) -> Vec<ImportedLore> {
+/// 解析一组条目，同时返回被跳过的条目数。
+///
+/// 入口接受数组（CCv3）或 `uid → entry` 对象（酒馆运行时导出）。
+///
+/// 真实卡里出现过「清空了正文但没删条目」的残留（实测：某 148 条卡有 1 条 `content` 为空、
+/// `comment` 为"总结"）。跳过是对的，但要让用户知道，不能静默少一条。
+pub fn parse_entries_counting(value: &Value) -> (Vec<ImportedLore>, usize) {
     let pairs: Vec<(String, &Value)> = match value {
         Value::Array(items) => items
             .iter()
@@ -32,10 +40,13 @@ pub fn parse_entries(value: &Value) -> Vec<ImportedLore> {
         Value::Object(map) => map.iter().map(|(key, item)| (key.clone(), item)).collect(),
         _ => Vec::new(),
     };
-    pairs
+    let total = pairs.len();
+    let lore: Vec<ImportedLore> = pairs
         .into_iter()
         .filter_map(|(uid, entry)| parse_entry(&uid, entry))
-        .collect()
+        .collect();
+    let skipped = total - lore.len();
+    (lore, skipped)
 }
 
 /// 单条条目 → `ImportedLore`。非对象、或内容为空的条目直接跳过。
@@ -57,8 +68,8 @@ fn parse_entry(uid: &str, entry: &Value) -> Option<ImportedLore> {
     };
 
     let decorators = Decorators::split(&raw_content);
-    let keys = strings(entry.get("key").or_else(|| entry.get("keys")));
-    let secondary_keys = strings(entry.get("keysecondary").or_else(|| entry.get("secondary_keys")));
+    let keys = pick_strings(entry, &["key", "keys"]);
+    let secondary_keys = pick_strings(entry, &["keysecondary", "secondary_keys"]);
 
     // `enabled`（CCv3）与 `disable`（酒馆）语义相反；缺少两者时按启用处理。
     let enabled = optional_flag(entry, "enabled").unwrap_or_else(|| !flag(entry, "disable"));
@@ -67,12 +78,11 @@ fn parse_entry(uid: &str, entry: &Value) -> Option<ImportedLore> {
         .or_else(|| number(entry, "order"))
         .unwrap_or(100.0);
 
-    let logic = number(entry, "selectiveLogic")
+    let logic = pick_number(entry, &["selectiveLogic"])
         .map(|value| LoreLogic::from_world_info(value as i64))
         .unwrap_or_default();
 
-    let position = entry.get("position");
-    let mut section = section_from_position(position);
+    let mut section = section_for(entry);
     if let Some(overridden) = decorators.section() {
         section = overridden;
     }
@@ -101,38 +111,53 @@ fn parse_entry(uid: &str, entry: &Value) -> Option<ImportedLore> {
         content: decorators.content,
         keys,
         secondary_keys,
-        constant: flag(entry, "constant"),
+        constant: pick_flag(entry, &["constant"]).unwrap_or(false),
         enabled,
         order: to_i32(order),
-        priority: number(entry, "priority"),
+        priority: pick_number(entry, &["priority"]),
         selective: flag(entry, "selective"),
         logic,
         section,
-        depth: number(entry, "depth"),
-        role: number(entry, "role").map(|value| LoreRole::from_world_info(value as i64)),
-        probability: number(entry, "probability"),
-        use_probability: optional_flag(entry, "useProbability"),
-        group: non_empty(text(entry, "group")),
-        group_weight: number(entry, "groupWeight"),
-        group_override: optional_flag(entry, "groupOverride"),
-        sticky: number(entry, "sticky"),
-        cooldown: number(entry, "cooldown"),
-        delay: number(entry, "delay"),
-        scan_depth: number(entry, "scanDepth"),
-        case_sensitive: optional_flag(entry, "case_sensitive")
-            .or_else(|| optional_flag(entry, "caseSensitive")),
-        match_whole_words: optional_flag(entry, "matchWholeWords"),
-        use_regex: optional_flag(entry, "use_regex"),
-        exclude_recursion: optional_flag(entry, "excludeRecursion"),
-        prevent_recursion: optional_flag(entry, "preventRecursion"),
-        delay_until_recursion: optional_flag(entry, "delayUntilRecursion"),
+        depth: pick_number(entry, &["depth"]),
+        role: pick_number(entry, &["role"]).map(|value| LoreRole::from_world_info(value as i64)),
+        probability: pick_number(entry, &["probability"]),
+        use_probability: pick_flag(entry, &["useProbability"]),
+        group: non_empty(pick_text(entry, &["group"])),
+        group_weight: pick_number(entry, &["groupWeight", "group_weight"]),
+        group_override: pick_flag(entry, &["groupOverride", "group_override"]),
+        // 定时效果：酒馆把「未启用」写成显式 0，按正数才认定。
+        sticky: pick_positive(entry, &["sticky"]),
+        cooldown: pick_positive(entry, &["cooldown"]),
+        delay: pick_positive(entry, &["delay"]),
+        scan_depth: pick_number(entry, &["scanDepth", "scan_depth"]),
+        case_sensitive: pick_flag(entry, &["case_sensitive", "caseSensitive"]),
+        match_whole_words: pick_flag(entry, &["matchWholeWords", "match_whole_words"]),
+        use_regex: pick_flag(entry, &["use_regex"]),
+        exclude_recursion: pick_flag(entry, &["excludeRecursion", "exclude_recursion"]),
+        prevent_recursion: pick_flag(entry, &["preventRecursion", "prevent_recursion"]),
+        delay_until_recursion: pick_flag(entry, &["delayUntilRecursion", "delay_until_recursion"]),
         character_filter: entry.get("characterFilter").cloned(),
-        vectorized: flag(entry, "vectorized"),
+        vectorized: pick_flag(entry, &["vectorized"]).unwrap_or(false),
         decorators: decorators.lines,
         extensions: entry.get("extensions").cloned(),
         source_uid: Some(source_uid),
         source_dialect: dialect.to_owned(),
     })
+}
+
+/// 条目的位置信号来源。
+///
+/// CCv3 的顶层 `position` 只有 `before_char` / `after_char` 两值，无法区分世界 / 场景；
+/// 卡内嵌 `character_book` 的 `extensions.position` 保留了酒馆的 0–6 数字枚举，信号更细。
+/// 实测两张真实卡：`before_char ↔ 0` 完全对应，而 3 条 `after_char` 的真实值是 4（@深度）。
+/// 因此数字枚举优先，字符串作为回退。
+fn section_for(entry: &Value) -> LoreSection {
+    if let Some(numeric) = entry.get("extensions").and_then(|ext| ext.get("position")) {
+        if numeric.is_number() || numeric.is_string() {
+            return section_from_position(Some(numeric));
+        }
+    }
+    section_from_position(entry.get("position"))
 }
 
 /// `position` → IF 三段（docs/13 §2）。
@@ -233,8 +258,16 @@ pub fn sustainability_warnings(lore: &[ImportedLore]) -> Vec<String> {
     if lore.iter().any(|item| item.vectorized) {
         warnings.push("有条目依赖向量检索激活；v1 不支持向量激活，导入后仅保留内容，需要人工决定是否改为关键词触发。".to_owned());
     }
-    if lore.iter().any(|item| item.use_regex == Some(true)) {
-        warnings.push("有条目的 keys 声明为正则匹配（use_regex）；v1 的设定条目按字面关键词匹配，正则需人工确认。".to_owned());
+    // 实测两张真实卡都把 `use_regex` 标成了全 true（导出工具的默认值），而 keys 本身是
+    // 字面词。只有 keys 里真的含正则元字符时，字面匹配才会给出不同结果，才值得提醒。
+    let regex_shaped = lore
+        .iter()
+        .filter(|item| item.use_regex == Some(true) && item.keys.iter().any(|key| has_regex_meta(key)))
+        .count();
+    if regex_shaped > 0 {
+        warnings.push(format!(
+            "{regex_shaped} 条条目的 keys 含正则元字符且声明为正则匹配；v1 的设定条目按字面关键词匹配，这些条目需要人工确认匹配规则。"
+        ));
     }
     if lore.iter().any(|item| item.character_filter.is_some()) {
         warnings.push("有条目带 characterFilter（仅对指定角色生效）；需要确认对应主体是否存在于本世界。".to_owned());
@@ -248,10 +281,21 @@ pub fn sustainability_warnings(lore: &[ImportedLore]) -> Vec<String> {
     warnings
 }
 
+/// 关键词里是否用了正则语法。只看元字符，不尝试编译（社区卡里存在 `(` 这类非法表达式）。
+fn has_regex_meta(key: &str) -> bool {
+    key.chars()
+        .any(|c| matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 测试里只关心条目本身，跳过数另有断言。
+    fn parse_entries(value: &Value) -> Vec<ImportedLore> {
+        super::parse_entries_counting(value).0
+    }
 
     #[test]
     fn parses_ccv3_entry_with_position_and_regex_flag() {
@@ -346,5 +390,100 @@ mod tests {
         let lore = parse_entries(&entries);
         assert_eq!(lore.len(), 1);
         assert_eq!(lore[0].content, "ok");
+
+        let (lore, skipped) = parse_entries_counting(&entries);
+        assert_eq!(lore.len(), 1);
+        assert_eq!(skipped, 2, "被跳过的条目数要能报给用户");
+    }
+
+    /// 实测形态：卡内嵌 character_book 的顶层 `position` 是 "after_char"，
+    /// 而 `extensions.position` 保留酒馆数字枚举（4 = @深度）。
+    #[test]
+    fn extensions_position_beats_ccv3_string_position() {
+        let entries = json!([{
+            "keys": [],
+            "comment": "文风",
+            "content": "style_guide: ...",
+            "constant": true,
+            "position": "after_char",
+            "extensions": {"position": 4}
+        }]);
+        let lore = parse_entries(&entries);
+        assert_eq!(lore[0].section, LoreSection::Scene, "数字枚举更细，应优先");
+
+        // 数字与字符串一致时（before_char ↔ 0）保持角色段。
+        let entries = json!([{
+            "keys": [],
+            "content": "x",
+            "position": "before_char",
+            "extensions": {"position": 0}
+        }]);
+        assert_eq!(parse_entries(&entries)[0].section, LoreSection::Character);
+    }
+
+    /// 真实卡把 depth / role / probability 放在 extensions 里，顶层没有。
+    #[test]
+    fn reads_entry_state_from_extensions_when_top_level_is_absent() {
+        let entries = json!([{
+            "keys": ["长安"],
+            "comment": "城规",
+            "content": "夜禁",
+            "extensions": {
+                "depth": 4,
+                "role": 1,
+                "probability": 100,
+                "useProbability": true,
+                "selectiveLogic": 2,
+                "group_weight": 80,
+                "group_override": true,
+                "scan_depth": 3,
+                "match_whole_words": true,
+                "exclude_recursion": true
+            }
+        }]);
+        let entry = &parse_entries(&entries)[0];
+        assert_eq!(entry.depth, Some(4.0));
+        assert_eq!(entry.role, Some(LoreRole::User), "1 = user");
+        assert_eq!(entry.probability, Some(100.0));
+        assert_eq!(entry.use_probability, Some(true));
+        assert_eq!(entry.logic, LoreLogic::NotAny, "selectiveLogic 2 = NOT ANY");
+        assert_eq!(entry.group_weight, Some(80.0));
+        assert_eq!(entry.group_override, Some(true));
+        assert_eq!(entry.scan_depth, Some(3.0));
+        assert_eq!(entry.match_whole_words, Some(true));
+        assert_eq!(entry.exclude_recursion, Some(true));
+    }
+
+    /// 酒馆把「未启用定时」写成显式的 0；若当作有值会误报「带定时效果」。
+    #[test]
+    fn explicit_zero_duration_is_not_a_timer() {
+        let entries = json!([{
+            "keys": ["a"],
+            "content": "x",
+            "extensions": {"sticky": 0, "cooldown": 0, "delay": 0}
+        }]);
+        let lore = parse_entries(&entries);
+        assert!(lore[0].sticky.is_none() && lore[0].cooldown.is_none() && lore[0].delay.is_none());
+        assert!(sustainability_warnings(&lore).is_empty());
+    }
+
+    /// 真实卡把 use_regex 全标 true，但 keys 是字面词——此时不该产生噪音警告。
+    #[test]
+    fn use_regex_warning_needs_regex_shaped_keys() {
+        let literal = parse_entries(&json!([{
+            "keys": ["朝廷", "官府"],
+            "content": "x",
+            "use_regex": true
+        }]));
+        assert!(sustainability_warnings(&literal).is_empty());
+
+        let shaped = parse_entries(&json!([{
+            "keys": ["(", "。", "？"],
+            "content": "x",
+            "use_regex": true
+        }]));
+        let warnings = sustainability_warnings(&shaped);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("正则元字符"), "{}", warnings[0]);
     }
 }

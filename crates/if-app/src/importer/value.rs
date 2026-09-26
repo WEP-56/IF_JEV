@@ -60,3 +60,51 @@ pub fn to_i32(value: f64) -> i32 {
     }
     value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
+
+/// 条目字段的分层读取：先看条目顶层，再看 `extensions`。
+///
+/// 实测（2026-09-26，两张真实 V3 卡）表明：卡内嵌 `character_book` 的顶层字段常常
+/// 是导出工具写的默认值（`insertion_order` 全卡统一、`selective` / `use_regex` 全为
+/// true），而酒馆引擎真正使用的条目状态放在 `extensions` 里（28 个键，含 `depth`、
+/// `role`、`probability`、`selectiveLogic`、`position` 等）。
+///
+/// `null` 视为未设置并继续往下找。
+pub fn pick<'a>(entry: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    for key in keys {
+        if let Some(found) = entry.get(*key).filter(|value| !value.is_null()) {
+            return Some(found);
+        }
+    }
+    let extensions = entry.get("extensions")?;
+    for key in keys {
+        if let Some(found) = extensions.get(*key).filter(|value| !value.is_null()) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn pick_number(entry: &Value, keys: &[&str]) -> Option<f64> {
+    pick(entry, keys).and_then(Value::as_f64)
+}
+
+/// 只认正数。酒馆把 `sticky` / `cooldown` / `delay` 未启用写成显式的 `0`，
+/// 若直接当作「有值」会误报「带定时效果」。
+pub fn pick_positive(entry: &Value, keys: &[&str]) -> Option<f64> {
+    pick_number(entry, keys).filter(|value| *value > 0.0)
+}
+
+pub fn pick_flag(entry: &Value, keys: &[&str]) -> Option<bool> {
+    pick(entry, keys).and_then(Value::as_bool)
+}
+
+pub fn pick_text(entry: &Value, keys: &[&str]) -> String {
+    pick(entry, keys)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+pub fn pick_strings(entry: &Value, keys: &[&str]) -> Vec<String> {
+    strings(pick(entry, keys))
+}
