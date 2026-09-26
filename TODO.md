@@ -32,7 +32,8 @@
   - 已有 `submit_if` / `submit_if_model` 落盘入口：先落一张 `pending` 裁定卡，不直接冒充事实。
   - 已有 `confirm_if` / `reinterpret_if` / `cancel_if`，以及本地确定性冲突预检（`IfConflict` / `IfConflictResolution::Reinterpret`）。
   - 已增加确定性启发式 `parse_if` 草案（指令检测、类型初判、时间锚点、锁定建议）。
-  - 真实 T-parse、语义级冲突预检与裁定卡 UI 仍待完成。
+  - [x] 裁定卡 UI（`app/src/components/ChatView.tsx`）：`pending_if` 一出现就渲染卡片，措辞可编辑，取消 / 确认并锁定 / 按重释确认三个动作已接线。
+  - [ ] 真实 T-parse（语义级解析）与语义级冲突预检仍待完成。
 - [ ] 实现 IF 锁定、冲突处理和最小承诺（回溯型 v1 只做重释）
   - 已有确定性冲突预检的雏形（相反断言识别 + 重释）；锁定等级与保护期尚未接入。
 - [ ] 实现候选生成、Jev 判定、命运骰子和裁决策略
@@ -72,6 +73,8 @@
 - [x] 会话列表落到界面：启动读 `library.db`（`list_all_sessions`）→ 侧栏列**占位** → 点开才载入世界文件；删除会话连引用与世界文件一起删（`delete_session`）。**修掉「建完会话重启就找不到」的真机 bug**（docs/10 §3.0）。
 - [ ] 把「真实会话」与演示故事（`initialStories`）在侧栏里分开——现在排在同一个列表里
 - [ ] 实现裁定卡、推演卡和按节拍展示
+  - [x] 裁定卡（`ChatView.tsx`，含冲突展示与重释入口）。
+  - [ ] 推演卡与按节拍展示（随 `if-pipeline`）。
 - [ ] 实现角色、世界、趋势和 IF 导图面板
   - [x] 角色 / 世界名 / 设定条目 / 规则改由**投影**重建（`app/src/projection.ts`），设定条目在「世界」页签下按归段显示。
   - [ ] 趋势与 IF 导图（世界线）尚未接投影。
