@@ -7,6 +7,7 @@ members = [
     "crates/if-store",
     "crates/if-judge",
     "crates/if-agent",
+    "crates/if-pipeline",
     "crates/if-app",
 ]
 
@@ -24,6 +25,7 @@ if-policy = { path = "crates/if-policy" }
 if-agent = { path = "crates/if-agent" }
 if-judge = { path = "crates/if-judge" }
 if-store = { path = "crates/if-store" }
+if-pipeline = { path = "crates/if-pipeline" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

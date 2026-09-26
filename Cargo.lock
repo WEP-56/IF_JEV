@@ -1576,6 +1576,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-pipeline"
+version = "0.1.0"
+dependencies = [
+ "if-domain",
+ "if-judge",
+ "if-policy",
+ "if-store",
+ "if-views",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "if-policy"
 version = "0.1.0"
 dependencies = [

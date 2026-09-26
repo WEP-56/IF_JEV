@@ -1,0 +1,21 @@
+[package]
+name = "if-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "IF 回合流程：把视图、判定与裁决策略编排成一个可提交的回合"
+
+[dependencies]
+if-domain.workspace = true
+if-views.workspace = true
+if-policy.workspace = true
+if-judge.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+if-store.workspace = true
