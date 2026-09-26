@@ -1,7 +1,7 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后；当晚补上 IF 提交缺陷的修复）。此时 `main` = **`725fff4`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
+> 最后核对：**2026-09-26**（`if-pipeline` 落地、回合编排跑通后；当晚补上 IF 提交缺陷的修复）。此时 `main` = **`000a471`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
 
 ## 0. 冷启动速览（先读这一节）
 
@@ -20,7 +20,7 @@ T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    417 passed / 0 failed
+cargo test --workspace                    421 passed / 0 failed
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 342.90 kB）
@@ -159,15 +159,23 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 模型多嘴回了 `input` 也一律覆盖；报错同时列出「模型实际返回了哪些字段」，
 并提示可以重试或换更严格的结构模型。
 
-护栏是一条**结构对齐测试**（`diagnostics::tests`）：
-`IfDraft` 的每个字段要么在工具 schema 的 `properties` 里且 `required`，
-要么在豁免表里（`input` = 引擎回填，`rewrite_candidates` = 带 serde default、只有确定性
-解析器会产）。**以后给 `IfDraft` 加字段而忘了同步 schema，它会变红**——
-再不会退化成真机上的一句「IF 提交失败」。
+护栏有两条（`diagnostics::tests`，共 8 项）：
+
+1. **结构对齐**——`IfDraft` 的每个字段要么在工具 schema 的 `properties` 里且 `required`，
+   要么在豁免表里（`input` = 引擎回填，`rewrite_candidates` = 带 serde default、只有确定性
+   解析器会产）。**以后给 `IfDraft` 加字段而忘了同步 schema，它会变红**。
+2. **整条路径**——为此把 `parse_if_with_model` 拆成「读配置 + `build_provider`」与
+   `parse_if_with(provider, …)` 两半，于是测试能注入
+   `if_agent::provider::scripted::ScriptedProvider`，**不联网、不花额度地跑真机同一条
+   代码路径**（发问 → `tool_uses()` → 补 `input` → 反序列化）。顺带钉住：模型只说话不调
+   工具时报「未调用 `submit_if_draft`」、上游报错**原样透出**而不是伪装成「草案无效」、
+   已取消的任务不再解析结果。
 
 > 教训（与 `if-pipeline` 那 6 个缺陷同类）：**工具 schema 是一份契约，但它不被任何
-> 运行时代码校验**——`parse_if_with_model` 绕开 agent loop 直接读 `tool_uses()`，
+> 运行时代码校验**——`parse_if_with` 绕开 agent loop 直接读 `tool_uses()`，
 > 没人拿 schema 去验模型的返回。契约与 Rust 结构体只能靠测试对齐。
+> 另一条：**只测纯函数不够**。`draft_from_tool_args` 从第一天起就是对的，炸的是
+> 「调用方怎么拿到 args」——所以补测试时补的是整条路径，不是再给纯函数加断言。
 
 解析与导入（确定性、无网络）：
 
@@ -279,7 +287,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 417 个测试通过
+cargo test --workspace              # 当前 421 个测试通过
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
