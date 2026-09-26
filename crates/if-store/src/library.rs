@@ -12,7 +12,11 @@
 //!
 //! 世界层的角色、世界书元数据、宏与警告，`if-store` 不解释它们，只负责存取；
 //! 形状由上层决定（现在是 `if-app::importer` 的 `ImportedWorld`）。
-//! 等 `ImportedWorld → if-domain` 的确定性映射落地，这里应该换成有类型的结构。
+//!
+//! `ImportedWorld → if-domain` 的确定性映射已经落地（`if-app::seed`），但它**不在这里**，
+//! 而且这里也不该认识它：映射的产物是**事件**，写进的是会话的 `.ifworld`，不是 `library.db`。
+//! 世界库始终只存「用户准备好的那份材料」，保持不透明反而让两层的职责干净——
+//! 上层改 `ImportedWorld` 的形状时，世界库一行都不用动。
 //!
 //! **但设定条目是例外，单独一张表**：因为「重新导入同一张卡时按来源整组替换」
 //! 是这一层必须自己保证的规则（见 [`Library::save_asset`]），
@@ -294,6 +298,24 @@ pub struct SessionRef {
     /// 会话的 `.ifworld` 路径。
     pub world_file: String,
     pub created_at: i64,
+}
+
+impl SessionRef {
+    /// 造一条引用。`created_at` 用存储层的时钟，免得调用方各算一份。
+    pub fn new(
+        id: impl Into<String>,
+        asset_id: impl Into<AssetId>,
+        label: impl Into<String>,
+        world_file: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            asset_id: asset_id.into(),
+            label: label.into(),
+            world_file: world_file.into(),
+            created_at: now_ms(),
+        }
+    }
 }
 
 /// `world_assets` 的一行。单独开一个结构，是为了不让九元组出现在签名里。
@@ -714,6 +736,27 @@ impl Library {
             params![session_id],
         )?;
         Ok(())
+    }
+
+    /// 按 id 取一条会话引用。恢复会话时用它找到那条 `.ifworld`。
+    pub fn session(&self, id: &str) -> Result<Option<SessionRef>> {
+        Ok(self
+            .conn
+            .query_row(
+                "select id, asset_id, label, world_file, created_at
+                 from world_sessions where id = ?1",
+                params![id],
+                |row| {
+                    Ok(SessionRef {
+                        id: row.get(0)?,
+                        asset_id: AssetId::new(row.get::<_, String>(1)?),
+                        label: row.get(2)?,
+                        world_file: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     pub fn sessions_of_asset(&self, id: &AssetId) -> Result<Vec<SessionRef>> {

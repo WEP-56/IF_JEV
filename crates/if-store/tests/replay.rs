@@ -499,6 +499,47 @@ fn beats_keep_their_display_order_and_world_time_is_monotonic() {
     assert!(projection.current_scene_index() == 2);
 }
 
+/// 世界播种要在**写入之前**算出这批事件的 ID（`Subject::created_by` / `LoreEntry::source`
+/// 存的是引入它的事件 ID）。这条规则是那个前提，不能悄悄改。
+#[test]
+fn event_ids_follow_next_seq() {
+    let mut store = Store::open_in_memory().unwrap();
+    let line = seed_world(&mut store);
+
+    let first = store.next_seq().unwrap();
+    assert_eq!(first, store.event_count().unwrap() + 1);
+    let last = first - 1;
+
+    let turn = TurnId::new("turn_0002");
+    let drafts: Vec<_> = (0..3)
+        .map(|i| {
+            EventDraft::new(
+                line.clone(),
+                turn.clone(),
+                WorldTime::from_days(1),
+                Patch::IfConflictResolved {
+                    note: format!("第 {i} 条"),
+                },
+            )
+        })
+        .collect();
+    let written = store.append_batch(drafts).unwrap();
+
+    for (i, event) in written.iter().enumerate() {
+        let seq = first + i as u64;
+        assert_eq!(event.seq, seq);
+        assert_eq!(event.id.as_str(), format!("evt_{seq:04}"));
+    }
+    // 下一批接着往后发号，不重号
+    assert_eq!(store.next_seq().unwrap(), first + 3);
+
+    // 回滚只挪头指针、不删事件，所以号也不会被回收——
+    // 这正是 `next_seq` 用 `max_seq` 而不是 `head_seq` 的原因。
+    let rolled_back = store.rollback_to(&line, last).unwrap();
+    assert_eq!(rolled_back.head_seq, last);
+    assert_eq!(store.next_seq().unwrap(), first + 3);
+}
+
 #[test]
 fn world_file_survives_reopen() {
     let dir = std::env::temp_dir().join(format!("if_store_test_{}", std::process::id()));

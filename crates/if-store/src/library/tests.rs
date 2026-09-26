@@ -401,6 +401,28 @@ fn detaching_a_session_frees_the_asset() {
     assert!(library.load_asset(&asset.id).unwrap().is_none());
 }
 
+/// 恢复会话要靠 `session(id)` 找到那条 `.ifworld`，所以 id 必须是能反查的。
+#[test]
+fn a_session_can_be_looked_up_by_id() {
+    let mut library = Library::open_in_memory().unwrap();
+    let asset = library
+        .save_asset(AssetDraft::new("世界", AssetOrigin::Written))
+        .unwrap();
+
+    let mut reference = SessionRef::new("river-1727", asset.id.clone(), "河流", "/worlds/river.ifworld");
+    assert!(reference.created_at > 0, "构造时就该填上时间戳");
+    reference.created_at = 1_700_000_000_000;
+    library.attach_session(&reference).unwrap();
+
+    assert_eq!(library.session("river-1727").unwrap(), Some(reference));
+    assert_eq!(library.session("不存在").unwrap(), None);
+    // 反查出来的世界文件路径要能直接用
+    assert_eq!(
+        library.session("river-1727").unwrap().unwrap().world_file,
+        "/worlds/river.ifworld"
+    );
+}
+
 // ------------------------------------------------------------------ 删除
 
 #[test]

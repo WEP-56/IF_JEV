@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Lock, Unlock, Sparkles, MapPin, ChevronDown, Loader2, GitFork, Undo2 } from 'lucide-react';
 import type { Character, MapNode, Story, Settings } from '../types';
+import { orderedLore, sectionLabel, type ProjectionLore } from '../projection';
 import { cn } from '../utils/cn';
 import { Silhouette } from './Messages';
 
@@ -156,7 +157,8 @@ function CharsTab({ story, settings, onUpdateChar, onPortrait }: Props) {
 
 function WorldTab({ story }: { story: Story }) {
   const w = story.world;
-  if (!w.vars.length && !w.rules.length) return <Empty text="世界尚未成形" />;
+  const lore = story.projection ? orderedLore(story.projection) : [];
+  if (!w.vars.length && !w.rules.length && !lore.length) return <Empty text="世界尚未成形" />;
   const arrow = (t: string) => (t === 'up' ? <span className="text-rose-400">↑</span> : t === 'down' ? <span className="text-sky-400">↓</span> : null);
 
   return (
@@ -168,6 +170,16 @@ function WorldTab({ story }: { story: Story }) {
         </div>
         {w.summary && <p className="selectable mt-3 text-[13px] leading-relaxed text-fg/80">{w.summary}</p>}
       </div>
+
+      {lore.length > 0 && (
+        <Card title={`设定条目 ${lore.length}`}>
+          <div className="space-y-1.5">
+            {lore.map((entry) => (
+              <LoreRow key={entry.id} entry={entry} />
+            ))}
+          </div>
+        </Card>
+      )}
 
       {w.vars.length > 0 && (
         <Card title="状态">
@@ -236,6 +248,36 @@ function WorldTab({ story }: { story: Story }) {
           </div>
         </Card>
       )}
+
+      {w.factions.length === 0 && w.locations.length === 0 && lore.length > 0 && (
+        <p className="px-1 text-[12px] leading-relaxed text-muted">
+          设定条目来自导入的世界书，按关键词或常驻激活；能不能激活要等视图编译时才算（docs/08 §5）。
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 一条设定条目。默认收起、只给标题与标记，展开才看正文——一张真实卡动辄上百条，
+ * 全展开的话这个面板就没法看了。
+ */
+function LoreRow({ entry }: { entry: ProjectionLore }) {
+  const [open, setOpen] = useState(false);
+  const marks = [
+    sectionLabel(entry.section),
+    entry.constant ? '常驻' : entry.keys.length ? entry.keys.slice(0, 3).join(' / ') : '无关键词',
+    entry.visibility === 'secret' ? '机密' : '',
+  ].filter(Boolean);
+
+  return (
+    <div className="overflow-hidden rounded-xl bg-bg/60">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-subtle">
+        <span className="min-w-0 flex-1 truncate text-[12.5px]">{entry.title}</span>
+        <span className="shrink-0 text-[11px] text-muted">{marks.join(' · ')}</span>
+        <ChevronDown size={13} className={cn('shrink-0 text-muted transition', open && 'rotate-180')} />
+      </button>
+      {open && <p className="selectable whitespace-pre-wrap px-2.5 pb-2.5 text-[12.5px] leading-relaxed text-fg/80">{entry.content}</p>}
     </div>
   );
 }

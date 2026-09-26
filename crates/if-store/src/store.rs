@@ -233,6 +233,17 @@ impl Store {
         Ok(n as u64)
     }
 
+    /// 下一条被追加的事件将拿到的 `seq`。
+    ///
+    /// 有了它，调用方就能在**写入之前**算出这一批事件的 ID：`append_batch` 按顺序
+    /// 从 `next_seq()` 起发号，第 `i` 条拿到 `seq = next_seq() + i`，ID 是
+    /// `EventId::numbered(该 seq)`。世界播种需要这一点——`Subject::created_by` 与
+    /// `LoreEntry::source` 存的是**引入它的事件 ID**，而播种是一次成批写入的，
+    /// 写完之后再补就晚了。这条规则由 `tests::event_ids_follow_next_seq` 钉住。
+    pub fn next_seq(&self) -> Result<u64> {
+        Ok(self.max_seq()? + 1)
+    }
+
     /// 某个世界线祖先链上的全部事件，按 `seq` 排序。
     pub fn events_for_line(&self, line: &WorldLineId) -> Result<Vec<Event>> {
         let lines = self.world_lines()?;

@@ -10,6 +10,7 @@ import { defaultSettings, initialStories, initialWorldAssets, mockJev, mockNarra
 import WorldLibrary from './components/WorldLibrary';
 import WorldPicker from './components/WorldPicker';
 import WorldImportPreview from './components/WorldImportPreview';
+import SessionPicker from './components/SessionPicker';
 import { fileToBase64, type ImportedWorld } from './import';
 import {
   createWrittenWorld,
@@ -18,38 +19,13 @@ import {
   demoWorldById,
   importFileToLibrary,
   listWorlds,
-  loadWorldAsset,
   toLibraryAssets,
-  toWorldAssetFromDetail,
 } from './library';
+import { createSession, listSessions, openSession, type SessionRef, type SessionView } from './session';
+import { toCharacters, toWorld } from './projection';
 import { isNative, tauriInvoke } from './ipc';
 
-type NativeWorldSnapshot = {
-  path: string;
-  label: string;
-  active_line_id: string;
-  head_seq: number;
-  event_count: number;
-  projection?: { injections?: unknown[] };
-  pending_if?: IfRulingCard;
-};
-
-type IfRulingCard = {
-  turn: string;
-  status: 'pending' | 'confirmed' | 'cancelled';
-  injection: {
-    input: string;
-    kind: string;
-    core: string;
-    time_anchor: string;
-    scope: string;
-    lock: string;
-    digestion?: string;
-    non_commitments: string[];
-  };
-  warnings: string[];
-  conflicts?: { event: string; existing_core: string; lock: string; reason: string }[];
-};
+type NativeWorldSnapshot = SessionView['snapshot'];
 
 const LS_KEY = 'if-preview-settings-v2';
 
@@ -81,6 +57,14 @@ export default function App() {
   const [assets, setAssets] = useState<LibraryAsset[]>(() => demoLibraryAssets(initialWorldAssets));
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState(initialStories[0].id);
+  /**
+   * `applySession` 要在 `setState` 之外知道「现在停在哪个故事」，才能把它压进后退历史。
+   * 直接闭包读 `activeId` 会拿到旧值，所以用 ref 跟一份最新的。
+   */
+  const activeIdRef = useRef(activeId);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -89,6 +73,8 @@ export default function App() {
   const [worldPickerOpen, setWorldPickerOpen] = useState(false);
   /** 导入解析结果，等待用户审阅确认后才写入世界库（docs/10 §7）。 */
   const [importPreview, setImportPreview] = useState<{ imported: ImportedWorld; fileName: string; dataBase64: string } | null>(null);
+  /** 选中的世界已经有会话时的待选列表。一个世界可以有多个会话（docs/10 §1）。 */
+  const [sessionChoice, setSessionChoice] = useState<{ asset: LibraryAsset; sessions: SessionRef[] } | null>(null);
   const [importNotice, setImportNotice] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [nativeWorld, setNativeWorld] = useState<NativeWorldSnapshot | null>(null);
@@ -185,16 +171,115 @@ export default function App() {
 
   const newStoryFn = useCallback(() => setWorldPickerOpen(true), []);
 
-  const createSession = useCallback((world: WorldAsset) => {
-    const template = initialStories.find((item) => item.world.name === world.name) ?? initialStories[0];
-    const s = { ...newStory(), worldId: world.id, title: `${world.name} · 新会话`, genre: world.genre, color: template.color, characters: world.characters, world: world.world, messages: [{ id: uid(), role: 'system' as const, content: `已选择世界「${world.name}」· 会话准备开始`, time: now() }] };
-    setStories((prev) => [s, ...prev]);
-    setActiveId((cur) => {
-      setHist((h) => ({ back: [...h.back, cur], fwd: [] }));
-      return s.id;
+  /**
+   * 建会话时要说的话：开场白、播种简报、以及**需要人来拿主意的地方**。
+   *
+   * 简报不折叠成一句「已创建」——`seed` 里那些待确认项（卡里的系统提示词、永远不会激活的
+   * 设定条目、还没替换的 `{{user}}`）正是这个世界此刻的真实缺口，藏起来等于让人以为
+   * 一切都安排好了。
+   */
+  const sessionMessages = useCallback((view: SessionView): Message[] => {
+    const messages: Message[] = [];
+    const opening = view.opening?.trim();
+    if (opening) {
+      messages.push({ id: uid(), role: 'narrator', time: now(), content: opening, choices: [] });
+    }
+    const seed = view.seed;
+    if (!seed) return messages;
+    const counts = [`${seed.subjects} 个主体`, `${seed.lore} 条设定`];
+    if (seed.lore_constant) counts.push(`其中 ${seed.lore_constant} 条常驻`);
+    if (seed.lore_disabled) counts.push(`${seed.lore_disabled} 条在卡里停用未写入`);
+    messages.push({
+      id: uid(),
+      role: 'system',
+      time: now(),
+      content: `世界已播种：${counts.join(' · ')} · 事件日志 ${view.snapshot.event_count} 条 · 世界种子 ${view.snapshot.projection.world_seed ?? '—'}`,
     });
+    if (seed.notes.length) {
+      messages.push({
+        id: uid(),
+        role: 'system',
+        time: now(),
+        content: `需要你拿主意的地方：\n\n${seed.notes.map((note) => `· ${note}`).join('\n\n')}`,
+      });
+    }
+    return messages;
+  }, []);
+
+  /**
+   * 把一个会话视图装进故事列表并切过去。
+   *
+   * `id` 用世界文件路径：同一条会话被打开两次应当是同一个故事，而不是叠出两份。
+   */
+  const applySession = useCallback((view: SessionView, asset: LibraryAsset) => {
+    const projection = view.snapshot.projection;
+    const story: Story = {
+      id: view.snapshot.path,
+      worldId: view.asset_id,
+      title: view.snapshot.label,
+      genre: view.genre,
+      color: 'bg-zinc-500',
+      updated: now(),
+      group: '今天',
+      tokens: 0,
+      characters: toCharacters(projection),
+      world: toWorld(projection, { name: view.asset_name, genre: view.genre, summary: asset.summary }),
+      // IF 导图还没有接世界线（下一刀）；先放一个如实的起点，免得画布空着
+      map: [{ id: 'origin', label: view.snapshot.label, type: 'origin', day: 'D0', main: true, desc: `由世界资产「${view.asset_name}」播种，共 ${view.snapshot.event_count} 条事件。` }],
+      messages: sessionMessages(view),
+      projection,
+    };
+    setStories((prev) => [story, ...prev.filter((item) => item.id !== story.id)]);
+    setHist((h) => ({ back: [...h.back, activeIdRef.current], fwd: [] }));
+    setActiveId(story.id);
+    setNativeWorld(view.snapshot);
+    setNativeWorldStatus('open');
+    setWorldPickerOpen(false);
+    setSessionChoice(null);
+  }, [sessionMessages]);
+
+  /** 浏览器预览：没有后端，就如实说这是预览，不用演示数据假装会话已经建好了。 */
+  const applyDemoSession = useCallback((world: WorldAsset) => {
+    const template = initialStories.find((item) => item.world.name === world.name) ?? initialStories[0];
+    const story: Story = {
+      ...newStory(),
+      worldId: world.id,
+      title: `${world.name} · 新会话`,
+      genre: world.genre,
+      color: template.color,
+      characters: world.characters,
+      world: world.world,
+      messages: [{ id: uid(), role: 'system', time: now(), content: `浏览器预览模式：没有后端，这里不会真的建出世界文件。选中的世界是「${world.name}」。` }],
+    };
+    setStories((prev) => [story, ...prev]);
+    setHist((h) => ({ back: [...h.back, activeIdRef.current], fwd: [] }));
+    setActiveId(story.id);
     setWorldPickerOpen(false);
   }, []);
+
+  /** 真建一个会话：后端播种 → 建 `.ifworld` → 落会话引用（docs/10 §3）。 */
+  const startSession = useCallback(async (asset: LibraryAsset) => {
+    setBusy(true);
+    try {
+      applySession(await createSession(asset.id), asset);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `新建会话失败：${describe(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [applySession]);
+
+  /** 回到已有会话：重启之后靠它回到上一次的进度。 */
+  const resumeSession = useCallback(async (session: SessionRef, asset: LibraryAsset) => {
+    setBusy(true);
+    try {
+      applySession(await openSession(session.id), asset);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `打开会话失败：${describe(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [applySession]);
 
   /**
    * 重新读世界库。Tauri 模式下读 `library.db`；读不出来就**显式报错并清空列表**，
@@ -220,23 +305,32 @@ export default function App() {
   }, [worldLibraryOpen, worldPickerOpen, reloadLibrary]);
 
   /**
-   * 选中一个资产 → 读详情 → 用详情里的角色与世界视图播种新会话。
-   * 列表只有摘要，所以详情要现读（也顺手把「资产被改动过」这件事同步进来）。
+   * 选中一个资产。**一个世界可以有多个会话**，所以先问一句：已经有会话就让人挑，
+   * 没有才直接建。空手建会话是 docs/10 §3 明确禁止的，这里也不能反过来悄悄建。
    */
   const selectWorld = useCallback(async (id: string) => {
-    try {
-      const asset = isNative()
-        ? toWorldAssetFromDetail(await loadWorldAsset(id))
-        : demoWorldById(initialWorldAssets, id);
-      if (!asset) {
+    const asset = assets.find((item) => item.id === id);
+    if (!asset) {
+      setImportNotice({ tone: 'error', text: `世界库里没有资产 ${id}` });
+      return;
+    }
+    if (!isNative()) {
+      const demo = demoWorldById(initialWorldAssets, id);
+      if (!demo) {
         setImportNotice({ tone: 'error', text: `世界库里没有资产 ${id}` });
         return;
       }
-      createSession(asset);
-    } catch (error) {
-      setImportNotice({ tone: 'error', text: `读取世界资产失败：${describe(error)}` });
+      applyDemoSession(demo);
+      return;
     }
-  }, [createSession]);
+    try {
+      const sessions = await listSessions(id);
+      if (sessions.length) setSessionChoice({ asset, sessions });
+      else await startSession(asset);
+    } catch (error) {
+      setImportNotice({ tone: 'error', text: `读取已有会话失败：${describe(error)}` });
+    }
+  }, [assets, applyDemoSession, startSession]);
 
   /**
    * 导入酒馆角色卡 / 世界书：读文件 → Rust 侧确定性解析 → 预览。
@@ -751,6 +845,15 @@ export default function App() {
         />
       )}
       {worldPickerOpen && <WorldPicker worlds={assets} onSelect={selectWorld} onCreateWorld={() => { setWorldPickerOpen(false); setWorldLibraryOpen(true); }} onImport={importWorld} onClose={() => setWorldPickerOpen(false)} />}
+      {sessionChoice && (
+        <SessionPicker
+          asset={sessionChoice.asset}
+          sessions={sessionChoice.sessions}
+          onResume={(session) => { void resumeSession(session, sessionChoice.asset); }}
+          onNew={() => { void startSession(sessionChoice.asset); }}
+          onClose={() => setSessionChoice(null)}
+        />
+      )}
       {worldLibraryOpen && <WorldLibrary worlds={assets} error={libraryError} onClose={() => setWorldLibraryOpen(false)} onCreate={() => { void createWorldManually(); }} onImport={importWorld} onDelete={(id) => { void removeWorld(id); }} />}
       {importPreview && <WorldImportPreview imported={importPreview.imported} onConfirm={() => { void confirmImport(); }} onCancel={() => { setImportPreview(null); }} />}
       {importNotice && (

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { ArrowUp, ArrowDown, Square, PanelRight, Zap, FastForward, Plus, ChevronDown, Upload, MoreHorizontal, Check, Dices, Copy, RotateCcw, GitBranch, type LucideIcon } from 'lucide-react';
 import type { Story, Settings, Message } from '../types';
+import type { IfRulingCard } from '../session';
 import { EVENT_TAGS } from '../data';
 import { cn } from '../utils/cn';
 import { EventMsg, ImageMsg, JevMsg, NarratorMsg, SystemMsg } from './Messages';
@@ -16,11 +17,11 @@ interface Props {
   rightOpen: boolean;
   onToggleRight: () => void;
   onSend: (text: string, tag: string) => void;
-  pendingIf?: {
-    injection: { input: string; kind: string; core: string; time_anchor: string; scope: string; lock: string; non_commitments: string[] };
-    warnings: string[];
-    conflicts?: { event: string; existing_core: string; lock: string; reason: string }[];
-  };
+  /**
+   * 待确认的裁定卡。类型直接用后端那一份（`session.ts`），别再手写一遍——
+   * 手写的副本漏掉一个字段（比如 `null`）就是一个编译期看不见、运行期才炸的坑。
+   */
+  pendingIf?: IfRulingCard | null;
   onConfirmIf: (input?: string) => void;
   onCancelIf: () => void;
   onReinterpretIf: () => void;

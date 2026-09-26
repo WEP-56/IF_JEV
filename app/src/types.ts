@@ -1,3 +1,11 @@
+/**
+ * 前端共享类型。
+ *
+ * 世界模型（投影）的类型在 `projection.ts`——它有自己的映射逻辑，放在一起更好读；
+ * 这里只把它当作 `Story` 的一个字段引进来说明类型。
+ */
+import type { Projection } from './projection';
+
 export type Role = 'event' | 'jev' | 'narrator' | 'system' | 'image';
 
 export interface StateDiff {
@@ -83,6 +91,13 @@ export interface Story {
   id: string;
   /** Reusable world asset selected when this session was created. */
   worldId?: string;
+  /**
+   * 真实会话的投影（`if-domain::Projection`）。
+   *
+   * 演示故事没有它。有它时，右栏的世界视图以它为准——它是「这个世界现在是什么样」，
+   * 而 `world` / `characters` 只是那个形状的展示壳子（见 `projection.ts`）。
+   */
+  projection?: Projection;
   title: string;
   genre: string;
   color: string;

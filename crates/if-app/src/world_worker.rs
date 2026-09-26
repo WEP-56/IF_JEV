@@ -14,6 +14,9 @@ use if_domain::value::Lock;
 use if_store::Store;
 use serde::Serialize;
 
+use crate::importer::ImportedWorld;
+use crate::seed::{self, SeedContext, SeedReport};
+
 enum Request {
     Snapshot(Sender<Result<WorldSnapshot, String>>),
     SubmitIf {
@@ -47,6 +50,38 @@ impl std::fmt::Debug for WorldWorker {
     }
 }
 
+/// 新建一个世界时要写进去的东西：名字、设置，以及要播种的世界材料。
+///
+/// `world` 是 `Option`：世界可以不带材料建出来（测试与恢复路径用），但**客户端不该走这条路**——
+/// docs/10 §3 要求新建会话先选一个已保存的世界。
+pub struct CreateRequest {
+    pub label: String,
+    pub settings: WorldSettings,
+    pub world: Option<ImportedWorld>,
+}
+
+impl CreateRequest {
+    pub fn new(label: impl Into<String>, settings: WorldSettings, world: Option<ImportedWorld>) -> Self {
+        Self {
+            label: label.into(),
+            settings,
+            world,
+        }
+    }
+}
+
+/// 打开或新建世界的结果：句柄 + 打开那一刻的快照 + 新建时的播种简报。
+///
+/// 快照跟着一起返回，是因为打开与新建本来就要在 store 线程上算一遍；
+/// 让调用方再问一次 `snapshot()` 只是多一趟往返。
+#[derive(Debug)]
+pub struct WorldHandle {
+    pub world: WorldWorker,
+    pub snapshot: WorldSnapshot,
+    /// 只有新建时有。
+    pub seed: Option<SeedReport>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct WorldSnapshot {
     pub path: String,
@@ -60,14 +95,15 @@ pub struct WorldSnapshot {
 }
 
 impl WorldWorker {
-    pub fn create(path: PathBuf, label: String) -> Result<Self, String> {
+    /// 新建一个世界，并按 `request.world` 播种（docs/10 §3）。
+    pub fn create(path: PathBuf, request: CreateRequest) -> Result<WorldHandle, String> {
         if path.exists() {
             return Err(format!("世界文件已存在：{}", path.display()));
         }
-        Self::start(path, Some(label))
+        Self::start(path, Some(request))
     }
 
-    pub fn open(path: PathBuf) -> Result<Self, String> {
+    pub fn open(path: PathBuf) -> Result<WorldHandle, String> {
         if !path.is_file() {
             return Err(format!("世界文件不存在：{}", path.display()));
         }
@@ -81,7 +117,7 @@ impl WorldWorker {
         Self::start(path, None)
     }
 
-    fn start(path: PathBuf, create_label: Option<String>) -> Result<Self, String> {
+    fn start(path: PathBuf, create: Option<CreateRequest>) -> Result<WorldHandle, String> {
         let (requests, receiver) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let thread_path = path.clone();
@@ -90,26 +126,22 @@ impl WorldWorker {
             .spawn(move || {
                 let opened = (|| {
                     let mut store = Store::open(&thread_path).map_err(|e| e.to_string())?;
-                    if let Some(label) = create_label {
-                        let seed = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-                        let settings = WorldSettings {
-                            seed,
-                            ..Default::default()
-                        };
+                    let mut report = None;
+                    if let Some(create) = create {
                         store
-                            .create_world(&label, settings)
+                            .create_world(&create.label, create.settings)
                             .map_err(|e| e.to_string())?;
+                        if let Some(world) = create.world.as_ref() {
+                            report = Some(sow(&mut store, world)?);
+                        }
                     }
                     let initial = snapshot(&store, &thread_path)?;
-                    Ok::<_, String>((store, initial))
+                    Ok::<_, String>((store, initial, report))
                 })();
 
                 match opened {
-                    Ok((mut store, initial)) => {
-                        if ready_tx.send(Ok(initial)).is_err() {
+                    Ok((mut store, initial, report)) => {
+                        if ready_tx.send(Ok((initial, report))).is_err() {
                             return;
                         }
                         while let Ok(request) = receiver.recv() {
@@ -151,9 +183,13 @@ impl WorldWorker {
             .recv()
             .map_err(|e| format!("世界工作线程未就绪：{e}"))?
         {
-            Ok(_) => Ok(Self {
-                requests: Some(requests),
-                thread: Some(thread),
+            Ok((snapshot, seed)) => Ok(WorldHandle {
+                world: Self {
+                    requests: Some(requests),
+                    thread: Some(thread),
+                },
+                snapshot,
+                seed,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -226,6 +262,41 @@ impl Drop for WorldWorker {
             let _ = thread.join();
         }
     }
+}
+
+/// 新世界的设置：默认值 + 一个刚生成的世界种子（docs/10 §5）。
+///
+/// 种子属于世界、不属于全局设置，所以在这里现生成，而不是从全局设置里读。
+pub fn new_world_settings() -> WorldSettings {
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    WorldSettings {
+        seed,
+        ..Default::default()
+    }
+}
+
+/// 把一个世界资产播种成新世界的第一批事件（docs/10 §3）。
+///
+/// 播种必须在 store 线程上做：`seed::plan` 要先读 `next_seq` 再写入，中间不能让别的写插进来。
+/// 这也正是 `Store::next_seq` 存在的理由——`Subject::created_by` 与 `LoreEntry::source`
+/// 存的是引入它的事件 ID，而播种是一次成批写入的。
+fn sow(store: &mut Store, world: &ImportedWorld) -> Result<SeedReport, String> {
+    let line = store
+        .active_line()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "新世界里没有活跃世界线".to_owned())?;
+    let first_seq = store.next_seq().map_err(|e| e.to_string())?;
+    let plan = seed::plan(world, &SeedContext::new(line, first_seq));
+    // `append_batch` 从 `first_seq` 起按顺序发号，所以 `plan` 预先推出的 ID 就是实际 ID。
+    // 「发号规则」由 if-store 的 `event_ids_follow_next_seq` 钉住，
+    // 「推出来的号与实际写出来的一致」由 if-app 的 `plan_matches_store_allocation` 钉住。
+    store
+        .append_batch(plan.drafts)
+        .map_err(|e| format!("播种世界失败：{e}"))?;
+    Ok(plan.report)
 }
 
 fn snapshot(store: &Store, path: &Path) -> Result<WorldSnapshot, String> {
@@ -439,22 +510,13 @@ fn cancel_if(store: &mut Store, path: &Path) -> Result<WorldSnapshot, String> {
     snapshot(store, path)
 }
 
+/// 世界文件名：`<名字 slug>-<纳秒>.ifworld`。
+///
+/// 名字基本是中文，所以 slug 保留 CJK（见 [`crate::slug`]）；折成纯 `world` 的话，
+/// 一个目录里的所有世界就只能靠时间戳认了。截到 40 个字符是为了别把路径顶爆。
 pub fn new_world_path(dir: &Path, label: &str) -> PathBuf {
-    let slug: String = label
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    let slug = if slug.is_empty() { "world" } else { &slug };
+    let slug: String = crate::slug::slug(label).chars().take(40).collect();
+    let slug = if slug.is_empty() { "world".to_owned() } else { slug };
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -474,20 +536,94 @@ mod tests {
         std::env::temp_dir().join(format!("if-worker-test-{id}.ifworld"))
     }
 
+    /// 不带材料地建一个空世界——只为把 worker 的请求处理跑起来。
+    fn new_world(path: &Path) -> WorldWorker {
+        WorldWorker::create(
+            path.to_path_buf(),
+            CreateRequest::new("测试世界", WorldSettings::default(), None),
+        )
+        .unwrap()
+        .world
+    }
+
     #[test]
     fn create_snapshot_reopen_and_close_world_on_owner_thread() {
         let path = temp_world_path();
         {
-            let worker = WorldWorker::create(path.clone(), "测试世界".into()).unwrap();
-            let snapshot = worker.snapshot().unwrap();
-            assert_eq!(snapshot.label, "测试世界");
-            assert_eq!(snapshot.active_line_id, "wl_main");
-            assert_eq!(snapshot.event_count, 1);
+            let handle = WorldWorker::create(
+                path.clone(),
+                CreateRequest::new("测试世界", WorldSettings::default(), None),
+            )
+            .unwrap();
+            assert_eq!(handle.snapshot.label, "测试世界");
+            assert_eq!(handle.snapshot.active_line_id, "wl_main");
+            assert_eq!(handle.snapshot.event_count, 1);
+            assert!(handle.seed.is_none(), "没有材料就没有播种简报");
+            assert_eq!(handle.world.snapshot().unwrap().label, "测试世界");
         }
         let reopened = WorldWorker::open(path.clone()).unwrap();
-        assert_eq!(reopened.snapshot().unwrap().label, "测试世界");
+        assert_eq!(reopened.snapshot.label, "测试世界");
         drop(reopened);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// 播种走的是「先读 next_seq 再成批写入」这条路，所以这里验的是端到端结果：
+    /// 一张真实形态的卡进去，世界里的主体与设定条目要真的在投影里。
+    #[test]
+    fn create_sows_the_world_asset_and_reports_what_it_did() {
+        let path = temp_world_path();
+        let world = crate::importer::parse_json(
+            r#"{"spec":"chara_card_v2","data":{
+                "name":"裴聿","description":"长安县令","scenario":"雨夜的长安",
+                "character_book":{"entries":{
+                    "1":{"comment":"宵禁","content":"入夜后坊门落锁。","key":["长安"],"constant":true}
+                }}}}"#,
+        )
+        .unwrap();
+
+        let handle = WorldWorker::create(
+            path.clone(),
+            CreateRequest::new("裴聿", WorldSettings::default(), Some(world)),
+        )
+        .unwrap();
+
+        // world_created + 主体 + 情境条目 + 宵禁条目
+        assert_eq!(handle.snapshot.event_count, 4);
+        let projection = &handle.snapshot.projection;
+        assert_eq!(projection.subjects.len(), 1);
+        assert_eq!(projection.subjects.values().next().unwrap().name, "裴聿");
+        assert!(projection.subjects.values().next().unwrap().aliases.is_empty());
+        assert_eq!(projection.lore.len(), 2);
+        assert!(projection
+            .lore
+            .values()
+            .any(|entry| entry.title == "裴聿 · 情境" && entry.constant));
+
+        let report = handle.seed.as_ref().expect("有材料就应当有播种简报");
+        assert_eq!(report.subjects, 1);
+        assert_eq!(report.lore, 2);
+        assert_eq!(report.world_name, "裴聿");
+
+        drop(handle);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// 中文世界名不能全被折成 `world`——那样一个目录里就只剩时间戳能区分了。
+    #[test]
+    fn world_file_name_keeps_the_chinese_label() {
+        let dir = std::env::temp_dir();
+        let path = new_world_path(&dir, "雨城 · 第一卷");
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("雨城-第一卷-"), "{name}");
+        assert!(name.ends_with(".ifworld"), "{name}");
+
+        // 全是标点的名字退到 `world`，但仍然唯一
+        let fallback = new_world_path(&dir, "···");
+        assert!(fallback
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("world-"));
     }
 
     #[test]
@@ -524,7 +660,7 @@ mod tests {
     #[test]
     fn submit_if_creates_pending_card_without_injecting() {
         let path = temp_world_path();
-        let worker = WorldWorker::create(path.clone(), "测试世界".into()).unwrap();
+        let worker = new_world(&path);
         let before = worker.snapshot().unwrap();
         let after = worker.submit_if("IF 城市的钟声突然停止".into()).unwrap();
         assert_eq!(before.event_count, after.event_count);
@@ -544,7 +680,7 @@ mod tests {
     #[test]
     fn preflight_marks_opposite_negation_as_conflict() {
         let path = temp_world_path();
-        let worker = WorldWorker::create(path.clone(), "测试世界".into()).unwrap();
+        let worker = new_world(&path);
         worker.submit_if("IF 城市的钟声停止".into()).unwrap();
         worker.confirm_if(None).unwrap();
         let after = worker.submit_if("IF 城市的钟声没有停止".into()).unwrap();
@@ -558,7 +694,7 @@ mod tests {
     #[test]
     fn reinterpret_conflict_commits_resolution_and_injection() {
         let path = temp_world_path();
-        let worker = WorldWorker::create(path.clone(), "测试世界".into()).unwrap();
+        let worker = new_world(&path);
         worker.submit_if("IF 城市的钟声停止".into()).unwrap();
         worker.confirm_if(None).unwrap();
         worker.submit_if("IF 城市的钟声没有停止".into()).unwrap();
@@ -573,7 +709,7 @@ mod tests {
     #[test]
     fn directive_language_is_advisory_and_can_enter_pending_card() {
         let path = temp_world_path();
-        let worker = WorldWorker::create(path.clone(), "测试世界".into()).unwrap();
+        let worker = new_world(&path);
         let snapshot = worker.submit_if("让林夏表白".into()).unwrap();
         assert_eq!(snapshot.pending_if.as_ref().map(|card| card.status), Some(IfCardStatus::Pending));
         assert!(snapshot.pending_if.as_ref().is_some_and(|card| card.warnings.iter().any(|warning| warning.contains("导演意图"))));

@@ -22,7 +22,9 @@
 - [x] 建立 Judge trait、Jev 后端与测试桩（`if-judge`：Jev、LLM 裁判、测试桩、重试）
 - [x] 接通桌面端真实 LLM 工具调用与 Jev 判定诊断入口（真实账号验收仍待用户）
 - [ ] 建立 Tauri 命令、事件和单世界工作线程
-  - 已接入 `create_world` / `open_world` / `close_world` / `get_world_snapshot`，世界 SQLite 连接由专属线程持有；聊天回合命令和前端状态接入仍待完成。
+  - [x] 世界生命周期命令：`open_world` / `close_world` / `get_world_snapshot`，世界 SQLite 连接由专属线程持有。
+  - [x] **会话创建与恢复**：`create_session`（选世界资产 → 播种出新的 `.ifworld` → 登记 `world_sessions` 引用）/ `list_sessions` / `open_session`。`create_world` 已删除——建会话必须先选世界（docs/10 §3）。
+  - [ ] 聊天回合命令和前端状态接入仍待完成。
 
 ## 核心回合
 
@@ -57,8 +59,8 @@
   - [x] 导入结果持久化为独立世界资产（`if-store::library` + `library.db`，与会话的 `.ifworld` 分开；见 docs/10 §7.0）
   - [x] 来源身份与整组替换（`if-app::library::source_key_of` + `content_hash`；条目按 `source_key` 整组替换，重导不留残影）
   - [x] 真实卡落库回归：PNG → 解析 → 映射 → 落库 → 读回 → 重导幂等（`crates/if-app/tests/library_roundtrip.rs`，样本缺则跳过）
-  - [ ] 导入 → `if-domain` 的确定性映射（主体 / 设定条目 / 规则草案）
-  - [ ] 建会话时写入 `world_sessions` 引用，并在删除资产时用它拦住「还有会话在用」
+  - [x] 导入 → `if-domain` 的确定性映射（`crates/if-app/src/seed.rs`）：角色 → `Subject`、`scenario` → 常驻条目、世界书条目 → `LoreEntry`；`first_message` 只进报告不写事件，`system_prompt` 不自动转规则（docs/10 §3.0）。
+  - [x] 建会话时写入 `world_sessions` 引用，删除资产时用它拦住「还有会话在用」（`create_session` → `Library::attach_session`）。
   - [ ] 补测三种**仍未覆盖**的真实方言（见 docs/13 §6.3）：V3 `assets` / `@@` 装饰器、独立 `lorebook_v3`、酒馆运行时 World Info JSON。两张真实卡实测 `assets=0`、`带装饰器=0`，所以这三项只有合成 fixture。
   - [ ] 条目 `uid` 对数字型 `id` 字段的识别（`{"0":{"id":7}}` 目前回落到 map 键 `"0"`，见 docs/16 已知限制）
   - [ ] 独立 `lorebook_v3`、酒馆运行时 World Info JSON、多世界书合并去重补测
@@ -66,8 +68,11 @@
 ## 前端
 
 - [ ] 将 frontend-example 对齐为 IF 三种动作：IF、观测、继续
+- [x] 实现新建会话流程：选世界 → 有会话时先问用哪个 → 真建 `.ifworld` → 重建世界视图（`WorldPicker` / `SessionPicker`）
 - [ ] 实现裁定卡、推演卡和按节拍展示
 - [ ] 实现角色、世界、趋势和 IF 导图面板
+  - [x] 角色 / 世界名 / 设定条目 / 规则改由**投影**重建（`app/src/projection.ts`），设定条目在「世界」页签下按归段显示。
+  - [ ] 趋势与 IF 导图（世界线）尚未接投影。
 - [ ] 实现重写、重掷、分支、回滚和未选之路（旧世界残影推迟，见 docs/15）
 
 ## 验证与交付
@@ -76,6 +81,8 @@
   - [x] 视图隔离与指纹确定性（`crates/if-views`，30 项）。
   - [x] 裁决确定性、阈值方向、分层排序与趋势转化（`crates/if-policy`，60 项）。
   - [x] 事件重放（`crates/if-judge/tests/replay.rs`）。
+  - [x] 事件 ID 分配规则（`crates/if-store/tests/replay.rs`：`next_seq` 与 `append_batch` 一致）与跨 crate 契约（`crates/if-app/src/seed/tests.rs`：预分配的 ID == 实际写出的 ID）。
+  - [x] 播种确定性（`seed.rs`，21 项）与会话创建 / 恢复（`session.rs`，10 项，真实文件 + 真实 SQLite）。
   - [ ] 回合级的端到端重放：同一事件序列 + 同一裁决必须得到同一个投影。
 - [ ] 用真实 Jev / LLM 配置完成一轮端到端演练
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收

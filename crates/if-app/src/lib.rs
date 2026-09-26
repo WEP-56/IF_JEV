@@ -1,15 +1,21 @@
 //! IF 桌面应用入口：Tauri 命令与事件（docs/12 §4）。
 //!
-//! 目前接入的是设置、密钥、连通性诊断，以及**世界库**（世界资产的持久化，docs/10 §2）。
-//! 回合相关的命令（`submit_if`、`continue_turn`……）随 `if-pipeline` 一起接入。
+//! 目前接入的是设置、密钥、连通性诊断、**世界库**（世界资产的持久化，docs/10 §2），
+//! 以及**会话的创建与恢复**（把世界资产播种成一个新世界，docs/10 §3）。
+//! 回合流程的其余部分（继续回合、观测、节拍渲染……）随 `if-pipeline` 一起接入。
 
 mod diagnostics;
 mod if_parser;
 // 对 `examples/inspect_card` 暴露，便于对真实卡文件做导入体检。
 pub mod importer;
 pub mod library;
+/// 导入结果 → `if-domain` 的确定性映射：会话创建时的播种（docs/10 §3）。
+pub mod seed;
 mod secrets;
+mod session;
 mod settings;
+/// 名字 → 文件名 / ID 片段的共用规则。
+pub mod slug;
 mod world_worker;
 
 use std::collections::HashMap;
@@ -18,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use if_domain::id::AssetId;
-use if_store::library::{AssetSummary, Library};
+use if_store::library::{AssetSummary, Library, SessionRef};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
@@ -26,6 +32,7 @@ use diagnostics::{JudgeTestInput, JudgeTestResult, LlmTestResult};
 use if_parser::IfDraft;
 use library::{AssetChange, AssetDetail};
 use secrets::{KeySlot, KeySource};
+use session::SessionView;
 use settings::{AppSettings, Slot};
 use world_worker::{WorldSnapshot, WorldWorker};
 
@@ -214,28 +221,70 @@ fn cancel_run(state: State<'_, AppState>, run_id: String) {
     }
 }
 
-#[tauri::command]
-async fn create_world(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    label: String,
-) -> Result<WorldSnapshot, String> {
-    let label = label.trim().to_owned();
-    if label.is_empty() {
-        return Err("世界名称不能为空".into());
-    }
-    let worlds_dir = app
+/* ---------- 会话：把世界资产播种成一个新世界（docs/10 §3） ---------- */
+
+/// 世界文件放在应用数据目录下——**和 `library.db` 分开放**：
+/// 世界库是「材料」，`worlds/` 是「历史」，两者的生命周期不同。
+fn worlds_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("worlds");
-    std::fs::create_dir_all(&worlds_dir).map_err(|e| format!("创建世界目录失败：{e}"))?;
-    let path = world_worker::new_world_path(&worlds_dir, &label);
-    let worker = WorldWorker::create(path, label)?;
-    let snapshot = worker.snapshot()?;
-    *state.world.lock().expect("world state poisoned") = Some(worker);
-    let _ = app.emit("world://opened", &snapshot);
-    Ok(snapshot)
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建世界目录失败：{e}"))?;
+    Ok(dir)
+}
+
+/// 选一个世界资产，建一个新会话。
+///
+/// 顺序是刻意的：**先把世界写出来，再落会话引用**。反过来的话，建世界失败就会在库里
+/// 留下一条指向不存在文件的会话——那种脏数据没法从界面上看出来。
+///
+/// docs/10 §3：新建会话必须先选世界，所以这里没有「建一个空世界」的入口。
+/// 想要空世界要走「手动撰写」——那也是一个资产，只是 payload 里没有角色与设定。
+#[tauri::command]
+async fn create_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    world_id: String,
+    label: Option<String>,
+) -> Result<SessionView, String> {
+    let material = {
+        let library = state.library.lock().expect("library poisoned");
+        session::load(&library, &AssetId::new(world_id))?
+    };
+    let dir = worlds_dir(&app)?;
+    let (handle, view, reference) = session::create(material, &dir, label)?;
+    {
+        let library = state.library.lock().expect("library poisoned");
+        library.attach_session(&reference).map_err(|e| e.to_string())?;
+    }
+    *state.world.lock().expect("world state poisoned") = Some(handle.world);
+    let _ = app.emit("world://opened", &view.snapshot);
+    Ok(view)
+}
+
+/// 某个世界已有的会话。新建会话前用它提示「这个世界已经有会话了」。
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>, world_id: String) -> Result<Vec<SessionRef>, String> {
+    let library = state.library.lock().expect("library poisoned");
+    session::sessions_of(&library, &AssetId::new(world_id))
+}
+
+/// 恢复一个已有会话：重启之后回到上一次的进度。
+#[tauri::command]
+async fn open_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionView, String> {
+    let (handle, view) = {
+        let library = state.library.lock().expect("library poisoned");
+        session::resume(&library, &session_id)?
+    };
+    *state.world.lock().expect("world state poisoned") = Some(handle.world);
+    let _ = app.emit("world://opened", &view.snapshot);
+    Ok(view)
 }
 
 #[tauri::command]
@@ -244,9 +293,9 @@ async fn open_world(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<WorldSnapshot, String> {
-    let worker = WorldWorker::open(PathBuf::from(path))?;
-    let snapshot = worker.snapshot()?;
-    *state.world.lock().expect("world state poisoned") = Some(worker);
+    let handle = WorldWorker::open(PathBuf::from(path))?;
+    let snapshot = handle.snapshot.clone();
+    *state.world.lock().expect("world state poisoned") = Some(handle.world);
     let _ = app.emit("world://opened", &snapshot);
     Ok(snapshot)
 }
@@ -435,7 +484,9 @@ pub fn run() {
             parse_if_model,
             submit_if_model,
             cancel_run,
-            create_world,
+            create_session,
+            list_sessions,
+            open_session,
             open_world,
             submit_if,
             confirm_if,
