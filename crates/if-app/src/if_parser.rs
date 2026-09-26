@@ -23,6 +23,24 @@ pub enum ParsedTimeAnchor {
     Always,
 }
 
+impl ParsedIfKind {
+    /// 默认锁定等级（docs/01 §6）。
+    ///
+    /// 这是一张**确定性**的「类型 → 等级」表，不是一个判断题：状态 / 认知 → `L1`，
+    /// 规则 → `L2`，事件 / 真相 / 回溯 → `L3`，类型未定 → `L0`。所以它只该有一个来源
+    /// （这里），**不该问模型**——模型答不出「`L2` 与 `L3` 在冲突让位时规则不同」这种事，
+    /// 而答错的代价是用户以为自己锁了公理、实际只是锚定。真机上就出过这一次：
+    /// 规则型的 IF 拿到了 `L3`。
+    pub fn default_lock(&self) -> &'static str {
+        match self {
+            ParsedIfKind::State | ParsedIfKind::Belief => "L1",
+            ParsedIfKind::Rule => "L2",
+            ParsedIfKind::Occurrence | ParsedIfKind::Truth | ParsedIfKind::Retcon => "L3",
+            ParsedIfKind::Unknown => "L0",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IfDraft {
     pub input: String,
@@ -48,17 +66,18 @@ pub fn parse(input: &str) -> Result<IfDraft, String> {
     let normalized = strip_if_prefix(input).to_owned();
     let kind = classify(&normalized, is_directive);
     let time_anchor = time_anchor(&normalized);
-    let scope = if ["所有人", "整个", "全世界", "全城", "世界"].iter().any(|word| normalized.contains(word)) {
+    // docs/01 §5 的作用范围是四档（个体 / 群体 / 地域 / 全局）。确定性解析器只做
+    // 关键词级的粗分——它**不主张**语义理解，细分级留给模型与 T-parse。
+    // 但产出值必须是 `IfScope` 认得的字符串（映射见 `world_worker::injection_from_draft`），
+    // 所以这里不用自造的第五个值。
+    let scope = if ["所有人", "全世界", "全人类", "全体", "世界"].iter().any(|word| normalized.contains(word)) {
         "global"
+    } else if ["全城", "整个", "全境", "全市", "全镇"].iter().any(|word| normalized.contains(word)) {
+        "region"
     } else {
-        "individual_or_local"
+        "individual"
     };
-    let suggested_lock = match kind {
-        ParsedIfKind::Rule => "L2",
-        ParsedIfKind::Occurrence | ParsedIfKind::Truth | ParsedIfKind::Retcon => "L3",
-        ParsedIfKind::State | ParsedIfKind::Belief => "L1",
-        ParsedIfKind::Unknown => "L0",
-    };
+    let suggested_lock = kind.default_lock();
     let mut warnings = Vec::new();
     if is_directive {
         warnings.push("这句话可能包含导演意图；当前先按候选 IF 进入裁定卡，由结构模型和 Jev 继续判断。".into());
@@ -178,5 +197,46 @@ mod tests {
         let truth = parse("IF 骑士一直是失踪的王储").unwrap();
         assert_eq!(truth.kind, ParsedIfKind::Truth);
         assert_eq!(truth.time_anchor, ParsedTimeAnchor::Always);
+    }
+
+    /// docs/01 §6 的锁定等级表。逐个类型钉住——真机上规则型拿到过 `L3`，
+    /// 而「`L2` 还是 `L3`」在冲突让位时的规则是不同的，不是随手写哪个都行。
+    #[test]
+    fn default_lock_follows_the_documented_table() {
+        for (kind, expected) in [
+            (ParsedIfKind::State, "L1"),
+            (ParsedIfKind::Belief, "L1"),
+            (ParsedIfKind::Rule, "L2"),
+            (ParsedIfKind::Occurrence, "L3"),
+            (ParsedIfKind::Truth, "L3"),
+            (ParsedIfKind::Retcon, "L3"),
+            (ParsedIfKind::Unknown, "L0"),
+        ] {
+            assert_eq!(kind.default_lock(), expected, "{kind:?} 的默认锁定等级");
+        }
+        // 文档举的例子：规则型 → L2。
+        assert_eq!(parse("IF 所有人无法说谎").unwrap().suggested_lock, "L2");
+    }
+
+    /// 作用范围只产 `IfScope` 认得的字符串（docs/01 §5 四档）。
+    /// 早先这里会产出自造的 `individual_or_local`，映射侧只认 `"global"`，
+    /// 于是中间两档静默塌成「个体」。
+    #[test]
+    fn scope_only_emits_documented_values() {
+        for (text, expected) in [
+            ("IF 所有人从此无法说谎", "global"),
+            ("IF 世界上没有人记得他", "global"),
+            ("IF 全城的人都做了同一个梦", "region"),
+            ("IF 整个王宫安静下来", "region"),
+            ("IF 林夏爱上顾言", "individual"),
+            ("IF 顾言相信林夏背叛了他", "individual"),
+        ] {
+            let draft = parse(text).unwrap();
+            assert_eq!(draft.scope, expected, "{text}");
+            assert!(
+                ["individual", "group", "region", "global"].contains(&draft.scope.as_str()),
+                "{text} 产出了 IfScope 不认识的范围：{}", draft.scope
+            );
+        }
     }
 }

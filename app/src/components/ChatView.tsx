@@ -10,6 +10,30 @@ type ChatContextMenu =
   | { kind: 'select-all'; x: number; y: number }
   | { kind: 'message'; x: number; y: number; message: Message };
 
+/**
+ * 裁定卡上的类型 / 时间锚点 / 范围是后端给的**英文枚举**，直接渲染等于把类型名
+ * 丢给用户看。这里只做展示层翻译。
+ *
+ * 认不出的值**原样显示**：宁可露出一个陌生的词，也不静默藏掉信息——
+ * 后端加了新枚举值而前端忘了同步时，这一条就是唯一的提示。
+ */
+const KIND_LABELS: Record<string, string> = {
+  state: '状态型',
+  belief: '认知型',
+  rule: '规则型',
+  occurrence: '事件型',
+  truth: '真相型',
+  retcon: '回溯型',
+  unknown: '未定型',
+};
+const TIME_ANCHOR_LABELS: Record<string, string> = { now: '此刻', past: '已经发生', always: '一直如此' };
+const SCOPE_LABELS: Record<string, string> = { individual: '个体', group: '群体', region: '地域', global: '全局' };
+const CARD_STATUS_LABELS: Record<string, string> = { pending: '待确认', confirmed: '已确认', cancelled: '已取消' };
+
+function zh(labels: Record<string, string>, value: string): string {
+  return labels[value] ?? value;
+}
+
 interface Props {
   story: Story;
   settings: Settings;
@@ -217,12 +241,12 @@ export default function ChatView(p: Props) {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[13px] font-semibold text-accent">待确认的 IF 裁定卡</div>
-                <div className="mt-0.5 text-[12px] text-muted">{p.pendingIf.injection.kind} · {p.pendingIf.injection.time_anchor} · 锁定 {p.pendingIf.injection.lock}</div>
+                <div className="mt-0.5 text-[12px] text-muted">{zh(KIND_LABELS, p.pendingIf.injection.kind)} · {zh(TIME_ANCHOR_LABELS, p.pendingIf.injection.time_anchor)} · 锁定 {p.pendingIf.injection.lock}</div>
               </div>
-              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">pending</span>
+              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">{zh(CARD_STATUS_LABELS, p.pendingIf.status)}</span>
             </div>
             <textarea value={rulingInput} onChange={(event) => setRulingInput(event.target.value)} rows={2} className="mt-3 w-full resize-y rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-accent/60" />
-            <div className="mt-2 text-[12px] text-muted">核心命题：{p.pendingIf.injection.core} · 范围：{p.pendingIf.injection.scope}</div>
+            <div className="mt-2 text-[12px] text-muted">核心命题：{p.pendingIf.injection.core} · 范围：{zh(SCOPE_LABELS, p.pendingIf.injection.scope)}</div>
             {p.pendingIf.warnings.length > 0 && <div className="mt-2 text-[12px] text-amber-500">{p.pendingIf.warnings.join('；')}</div>}
             {!!p.pendingIf.conflicts?.length && <div className="mt-2 space-y-1 text-[12px] text-rose-400">{p.pendingIf.conflicts.map((conflict) => <div key={conflict.event}>冲突：{conflict.existing_core}（{conflict.lock}，{conflict.reason}）</div>)}</div>}
             <div className="mt-3 flex justify-end gap-2">

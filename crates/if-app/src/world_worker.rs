@@ -438,8 +438,16 @@ fn injection_from_draft(draft: &crate::if_parser::IfDraft) -> IfInjection {
         crate::if_parser::ParsedTimeAnchor::Past => TimeAnchor::Past,
         crate::if_parser::ParsedTimeAnchor::Always => TimeAnchor::Always,
     };
+    // docs/01 §5 的作用范围是四档，`IfScope` 也一直是四个值——但这里曾经只认
+    // `"global"`、其余全塌成 `Individual`，于是 `Group` / `Region` **永远拿不到**，
+    // 一条「全城」的 IF 会被当成只影响一个人的事。
+    // 认不出的字符串按最窄的个体处理：宁可少认影响范围，也不要把一条局部 IF
+    // 当成世界规则去和全世界的既有事实冲突。
     let scope = match draft.scope.as_str() {
         "global" => IfScope::Global,
+        "region" => IfScope::Region,
+        "group" => IfScope::Group,
+        "individual" => IfScope::Individual,
         _ => IfScope::Individual,
     };
     let lock = match draft.suggested_lock.as_str() {
@@ -555,6 +563,38 @@ mod tests {
         )
         .unwrap()
         .world
+    }
+
+    /// docs/01 §5 的作用范围是四档，`IfScope` 也一直是四个值——但映射一度只认
+    /// `"global"`、其余全塌成 `Individual`，`Group` / `Region` 永远拿不到。
+    #[test]
+    fn every_documented_scope_survives_the_mapping() {
+        for (text, expected) in [
+            ("global", IfScope::Global),
+            ("region", IfScope::Region),
+            ("group", IfScope::Group),
+            ("individual", IfScope::Individual),
+            // 认不出的字符串 → 最窄的个体：宁可少认影响范围，也不要把一条局部 IF
+            // 当成世界规则去和全世界的既有事实冲突。
+            ("", IfScope::Individual),
+            ("world", IfScope::Individual),
+        ] {
+            let mut draft = crate::if_parser::parse("IF 林夏爱上顾言").unwrap();
+            draft.scope = text.to_owned();
+            assert_eq!(injection_from_draft(&draft).scope, expected, "范围字符串：{text:?}");
+        }
+    }
+
+    /// 类型 → 锁定等级（docs/01 §6）走的是 `ParsedIfKind::default_lock`，
+    /// 这里确认它真的落到了注入上——真机上规则型曾拿到 `L3`。
+    #[test]
+    fn the_injected_lock_follows_the_kind() {
+        let draft = crate::if_parser::parse("IF 所有人从此无法说谎").unwrap();
+        assert_eq!(draft.kind, crate::if_parser::ParsedIfKind::Rule);
+        assert_eq!(injection_from_draft(&draft).lock, Lock::L2);
+        // 而「事件型 → L3」另一个方向也得对，免得表被写成常量。
+        let event = crate::if_parser::parse("IF 王宫刚刚起火了").unwrap();
+        assert_eq!(injection_from_draft(&event).lock, Lock::L3);
     }
 
     #[test]

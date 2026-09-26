@@ -11,7 +11,7 @@ use if_domain::{JudgmentOutput, ViewKind, ViewRef};
 use if_judge::{CompiledView, JevJudge, Judge, JudgeError, JudgeRequest, LlmJudge, Question};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::if_parser::IfDraft;
+use crate::if_parser::{IfDraft, ParsedIfKind, ParsedTimeAnchor};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmEvent {
@@ -59,49 +59,97 @@ fn probe_tool() -> ToolSpec {
     }
 }
 
+/// 模型要填的那部分 IF 草案——**这份结构就是工具 schema 的对应物**。
+///
+/// 刻意**不含**三样东西，它们都不该问模型：
+///
+/// - `input`：用户的原始输入。问模型要，拿回来的是改写过措辞的复述，
+///   而裁定卡上要显示的正是用户自己写下的那句话——引擎回填。
+/// - `suggested_lock`：docs/01 §6 是「类型 → 等级」的**确定性表**，
+///   由 `kind` 经 `ParsedIfKind::default_lock` 推导。真机上模型在这里答错过
+///   （规则型给出了 `L3`，而表里是 `L2`）。
+/// - `rewrite_candidates`：只有确定性解析器会产；模型路径留空（前端目前也不渲染）。
+///
+/// 于是有一条可以精确到**集合相等**的不变式：schema 的 `properties` ≡ `ModelDraft` 的字段。
+/// 由 `the_tool_schema_matches_the_struct_the_model_fills` 盯着。
+#[derive(Debug, Serialize, Deserialize)]
+struct ModelDraft {
+    normalized: String,
+    is_directive: bool,
+    kind: ParsedIfKind,
+    time_anchor: ParsedTimeAnchor,
+    scope: String,
+    core: String,
+    non_commitments: Vec<String>,
+    warnings: Vec<String>,
+}
+
 /// 结构模型要填的 IF 草案 schema。
 ///
-/// ⚠️ **这个 schema 必须与 `IfDraft` 逐字段对齐**（除了引擎自己填的那几个）：
-/// schema 里少一个字段，模型就永远不会返回它，反序列化当场失败，而用户看到的
-/// 是一句「missing field `xxx`」——只有开发者看得懂、也不知道能做什么。
-/// 这件事有测试盯着：`every_field_the_model_must_return_is_declared_in_the_tool_schema`。
+/// ⚠️ **这份 schema 必须与 `ModelDraft` 逐字段对齐**：少一个字段，模型就永远不会
+/// 返回它，反序列化当场失败，而用户看到的是一句「missing field `xxx`」——
+/// 只有开发者看得懂、也不知道能做什么。真机上发生过一次（`input` 缺席）。
+/// 由 `the_tool_schema_matches_the_struct_the_model_fills` 盯着。
+///
+/// 每个字段都带 `description`，`kind` / `time_anchor` / `scope` 还带 `enum`——
+/// 这不是装饰：第一版一个说明都没有，模型只能猜，于是规则型猜出 `L3`、
+/// 「所有人」猜成 `individual`。**枚举值就是契约，把含义写在模型看得见的地方。**
 fn if_draft_tool() -> ToolSpec {
     ToolSpec {
         name: "submit_if_draft".into(),
-        description: "把用户输入解释为一条待确认的 IF 裁定卡。不要推演后果。".into(),
-        schema: json!({"type":"object","properties":{
-            "normalized":{"type":"string"},"is_directive":{"type":"boolean"},
-            "kind":{"type":"string","enum":["state","belief","rule","occurrence","truth","retcon","unknown"]},
-            "time_anchor":{"type":"string","enum":["now","past","always"]},
-            "scope":{"type":"string"},"suggested_lock":{"type":"string","enum":["L0","L1","L2","L3"]},
-            "core":{"type":"string"},"non_commitments":{"type":"array","items":{"type":"string"}},
-            "warnings":{"type":"array","items":{"type":"string"}}
-        },"required":["normalized","is_directive","kind","time_anchor","scope","suggested_lock","core","non_commitments","warnings"],"additionalProperties":false}),
+        description: "把用户输入解释为一条待确认的 IF 裁定卡。忠实解释，允许自然语言，不要推演后果；不要复述用户输入，也不要自行决定锁定等级。".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "normalized": { "type": "string", "description": "把用户输入规整成一句以「IF」开头的断言。只调整措辞，不要添加后果。" },
+                "is_directive": { "type": "boolean", "description": "输入是「让某人做某事」这类导演指令（而非断言）时为 true。" },
+                "kind": {
+                    "type": "string",
+                    "enum": ["state", "belief", "rule", "occurrence", "truth", "retcon", "unknown"],
+                    "description": "state 状态型（主体此刻的状态 / 关系 / 意图）· belief 认知型（此刻相信什么，事实不变）· rule 规则型（世界从现在起如何运作）· occurrence 事件型（刚发生或正在发生）· truth 真相型（一直为真，但未必有人知道）· retcon 回溯型（与已展示的过去矛盾）。判据见 docs/01 §5；拿不准写 unknown。"
+                },
+                "time_anchor": { "type": "string", "enum": ["now", "past", "always"], "description": "now 从此刻起 · past 已经发生 · always 一直如此。" },
+                "scope": { "type": "string", "enum": ["individual", "group", "region", "global"], "description": "作用范围（docs/01 §5）：individual 单个主体 · group 一群人 · region 一个地域 · global 整个世界——含「所有人」「全人类」这类说法。" },
+                "core": { "type": "string", "description": "这条 IF 的核心命题，一句话。不要展开后果。" },
+                "non_commitments": { "type": "array", "items": { "type": "string" }, "description": "这条 IF **不承诺**的后果，逐条列出。" },
+                "warnings": { "type": "array", "items": { "type": "string" }, "description": "解释上的歧义、边界不明确、判定标准不明之处，逐条列出。" }
+            },
+            "required": ["normalized", "is_directive", "kind", "time_anchor", "scope", "core", "non_commitments", "warnings"],
+            "additionalProperties": false
+        }),
         parallel_safe: false,
     }
 }
 
 /// 把模型返回的工具参数补成一份完整的 `IfDraft`。
 ///
-/// `input`（用户的原话）**刻意不进工具 schema**：问模型要它，拿回来的是一句
-/// 改写过措辞的复述，而裁定卡上要显示的正是用户自己写下的那句话。所以由引擎回填，
-/// 模型多嘴回了 `input` 也一律覆盖掉。
+/// 补的三样都是**引擎才有资格决定**的：`input`（用户原话）、`suggested_lock`
+/// （docs/01 §6 的表）、`rewrite_candidates`（确定性解析器的事）。
 fn draft_from_tool_args(args: Value, input: &str) -> Result<IfDraft, String> {
     let received: Vec<String> = args
         .as_object()
         .map(|map| map.keys().cloned().collect())
         .unwrap_or_default();
-    let mut args = args;
-    if let Value::Object(map) = &mut args {
-        map.insert("input".to_owned(), Value::String(input.to_owned()));
-    }
-    serde_json::from_value::<IfDraft>(args).map_err(|error| {
+    let model: ModelDraft = serde_json::from_value(args).map_err(|error| {
         let seen = if received.is_empty() {
             "模型没有返回任何字段".to_owned()
         } else {
             format!("模型实际返回了：{}", received.join(" / "))
         };
         format!("结构模型返回的 IF 草案无效：{error}（{seen}；可重试一次，或换用更严格的结构模型）")
+    })?;
+    Ok(IfDraft {
+        input: input.to_owned(),
+        is_directive: model.is_directive,
+        normalized: model.normalized,
+        suggested_lock: model.kind.default_lock().to_owned(),
+        kind: model.kind,
+        time_anchor: model.time_anchor,
+        scope: model.scope,
+        core: model.core,
+        non_commitments: model.non_commitments,
+        warnings: model.warnings,
+        rewrite_candidates: Vec::new(),
     })
 }
 
@@ -256,7 +304,8 @@ mod tests {
         Arc::new(AtomicBool::new(false))
     }
 
-    /// 模型**按 schema 如实返回**的一份参数（注意：没有 `input`）。
+    /// 模型**按 schema 如实返回**的一份参数。注意它里面**没有** `input`、
+    /// 也没有 `suggested_lock`——这两个引擎自己填，schema 里根本没有它们。
     fn schema_clean_args() -> Value {
         json!({
             "normalized": "IF 所有人从此无法说谎",
@@ -264,7 +313,6 @@ mod tests {
             "kind": "rule",
             "time_anchor": "now",
             "scope": "global",
-            "suggested_lock": "L2",
             "core": "所有人无法说谎",
             "non_commitments": ["角色是否意识到这条规则"],
             "warnings": []
@@ -280,9 +328,40 @@ mod tests {
             .expect("引擎应当补上 input 再解析");
         assert_eq!(draft.input, "IF 所有人从此无法说谎");
         assert_eq!(draft.core, "所有人无法说谎");
+        assert_eq!(draft.kind, ParsedIfKind::Rule);
+        // 锁定等级由 `kind` 推出（docs/01 §6），不是模型给的。
         assert_eq!(draft.suggested_lock, "L2");
-        assert_eq!(draft.kind, crate::if_parser::ParsedIfKind::Rule);
         assert_eq!(draft.rewrite_candidates, Vec::<String>::new());
+    }
+
+    /// 锁定等级是「类型 → 等级」的全函数（docs/01 §6），引擎自己算。
+    /// 真机上规则型拿到过 `L3`——而 `L2` 与 `L3` 在冲突让位时规则不同。
+    #[test]
+    fn the_lock_level_comes_from_the_kind_not_from_the_model() {
+        for (kind, expected) in [
+            ("state", "L1"),
+            ("belief", "L1"),
+            ("rule", "L2"),
+            ("occurrence", "L3"),
+            ("truth", "L3"),
+            ("retcon", "L3"),
+            ("unknown", "L0"),
+        ] {
+            let mut args = schema_clean_args();
+            args["kind"] = json!(kind);
+            let draft = draft_from_tool_args(args, "IF x").unwrap();
+            assert_eq!(draft.suggested_lock, expected, "类型 {kind} 默认锁定等级");
+        }
+    }
+
+    /// 模型没资格决定锁定等级：它连字段都没得填（`additionalProperties: false`），
+    /// 就算多嘴塞一个也不作数。
+    #[test]
+    fn a_lock_level_smuggled_in_by_the_model_is_ignored() {
+        let mut args = schema_clean_args();
+        args["suggested_lock"] = json!("L3");
+        let draft = draft_from_tool_args(args, "IF x").unwrap();
+        assert_eq!(draft.suggested_lock, "L2", "规则型就该是 L2，模型说了不算");
     }
 
     /// `input` 是用户的原话，不是模型该复述的东西：模型改写措辞也只当没看见。
@@ -304,15 +383,15 @@ mod tests {
         assert!(error.contains("重试"), "应当给出用户可以做的动作：{error}");
     }
 
-    /// 加字段时的护栏：`IfDraft` 的每个字段要么在工具 schema 里（模型负责填，且必须
-    /// `required`），要么在下面的豁免表里（引擎自己填 / 带 serde default）。
-    /// 漏掉任何一个，真机上的表现就是一次「IF 提交失败」。
+    /// 加字段时的护栏，而且现在是**集合相等**、没有豁免表：
+    /// 工具 schema 的 `properties` 必须与 `ModelDraft` 的字段**完全相同**。
+    ///
+    /// - schema 少一个 → 模型永远不返回它 → 反序列化当场失败（真机出过一次）；
+    /// - schema 多一个 → 模型照着返回会被 `additionalProperties: false` 挡下；
+    /// - 引擎自己填的那三个（`input` / `suggested_lock` / `rewrite_candidates`）
+    ///   压根不该出现在 schema 里——不是「可以不填」，是**不归模型管**。
     #[test]
-    fn every_field_the_model_must_return_is_declared_in_the_tool_schema() {
-        // `input` 由引擎回填（见 `draft_from_tool_args`）；`rewrite_candidates` 只有
-        // 确定性解析器会产、且带 `#[serde(default)]`，不该向模型索要。
-        const ENGINE_OWNED: [&str; 2] = ["input", "rewrite_candidates"];
-
+    fn the_tool_schema_matches_the_struct_the_model_fills() {
         let tool = if_draft_tool();
         let properties = tool.schema["properties"].as_object().expect("schema 必须有 properties");
         let required: Vec<&str> = tool.schema["required"]
@@ -322,23 +401,42 @@ mod tests {
             .map(|value| value.as_str().expect("required 必须是字符串数组"))
             .collect();
 
-        let sample = serde_json::to_value(crate::if_parser::parse("IF 所有人从此无法说谎").unwrap()).unwrap();
+        let sample = serde_json::to_value(ModelDraft {
+            normalized: "IF 所有人从此无法说谎".into(),
+            is_directive: false,
+            kind: ParsedIfKind::Rule,
+            time_anchor: ParsedTimeAnchor::Now,
+            scope: "global".into(),
+            core: "所有人无法说谎".into(),
+            non_commitments: vec![],
+            warnings: vec![],
+        })
+        .unwrap();
         let fields: Vec<String> = sample.as_object().unwrap().keys().cloned().collect();
 
         for field in &fields {
-            if ENGINE_OWNED.contains(&field.as_str()) {
-                assert!(!properties.contains_key(field), "`{field}` 是引擎自己的字段，不该向模型索要");
-                continue;
-            }
-            assert!(properties.contains_key(field), "`IfDraft::{field}` 不在工具 schema 里——模型永远不会返回它");
+            assert!(properties.contains_key(field), "`ModelDraft::{field}` 不在工具 schema 里——模型永远不会返回它");
             assert!(required.contains(&field.as_str()), "`{field}` 在 schema 里但没进 required——模型可能不返回它");
         }
         for declared in properties.keys() {
-            assert!(fields.iter().any(|field| field == declared), "工具 schema 声明了 `IfDraft` 没有的字段 `{declared}`");
+            assert!(fields.contains(declared), "工具 schema 声明了 `ModelDraft` 没有的字段 `{declared}`");
         }
         // 非必填字段会逼调用方处理「模型没给」的分支，而 `additionalProperties: false`
         // 的 strict 模式要求两者一致——所以这里要求 properties 与 required 完全同一集合。
         assert_eq!(properties.len(), required.len(), "schema 里不应有非必填字段");
+
+        for engine_owned in ["input", "suggested_lock", "rewrite_candidates"] {
+            assert!(!properties.contains_key(engine_owned), "`{engine_owned}` 归引擎管，不该向模型索要");
+        }
+
+        // 每个字段都要有 `description`——第一版一个都没有，模型只能靠猜，
+        // 于是「所有人」猜成 `individual`、规则型猜成 `L3`。
+        for (name, spec) in properties {
+            assert!(
+                spec["description"].as_str().is_some_and(|text| !text.trim().is_empty()),
+                "工具 schema 的 `{name}` 缺少 description——模型只能猜"
+            );
+        }
     }
 
     // ---- 整条模型路径：发问 → 读 tool_uses → 补齐 input → 反序列化 ----
