@@ -48,7 +48,7 @@
   - [ ] 展示背压（未裁决节拍上限）属流式读取侧，不在 `if-pipeline` 内（见 docs/04 §4.7）。
 - [ ] 实现正文回收与 Proposed / Observed / Committed 对账
   - [x] 对账落地（`if-pipeline::commit`）：docs/02 §11 四条规则 + 「同命题保留锁定最强的那条」→ 固定顺序的事件草稿（`DraftCursor` 先算号再写）。
-  - [x] 正文回收（T-extract，`tasks::extract`）：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对；正文本身存不存成事件待真机看过 T-render 的产出后再定（docs/16 §4）。
+  - [x] 正文回收（T-extract，`tasks::extract`）：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对；正文本身存不存成事件待真机看过 T-render 的产出后再定（docs/16 §4）。工具描述已与视图对齐（写 `facts[].key`——此前写成视图里根本不存在的 `propositions`）。
 - [ ] 实现继续回合、观测和基础后台结算
 
 ## 视图与导入
@@ -61,6 +61,11 @@
   - [x] 世界书激活（关键词 / 主体 / 概率）已落地（`if-pipeline::lore`，被 `context::activate_for_turn` 调用，是 docs/08 §5 的第一个真实调用方）。
   - [ ] 迁位 `if-lore` 与条件类激活补全——与 T-parse 同一触发条件（docs/16 §5 第 2 项）。
 - [ ] 实现世界创建、世界卡和角色定型
+  - [x] 「手动撰写」的世界资产（`library::draft_written`）与「导入」共用一条落库路径（`if-store::library`）。
+  - [x] **作者世界**（`crates/if-app/src/authored.rs`）：手写世界包（`*.world.json`）→ 事件的确定性映射，含**命题 / 事实 / 规则 / 故事线**——补上导入路径产不出的那一半（`seed` 不能猜，作者不用猜）。先校验再映射：悬空引用 / ID 与规范键重复 / 字段名打错，**一次报出全部问题并指出是哪一类的哪一条**。
+  - [x] 示例世界「临江市」（主体 5 / 命题 8 / 事实 8 / 规则 3 / 设定 7 / 故事线 3，按 docs/01 的六种 IF 类型各留落点）与测试夹具「渡口」；入口 `cargo run -p if-app --example build_world -- [--check] <世界包.json> [输出.ifworld]`，格式说明见 `crates/if-app/examples/worlds/README.md`。
+  - [ ] **把作者世界接进 `create_session`**：资产 payload 加判别字段、`session::load` 认两种材料、`CreateRequest` 收「导入 / 作者」枚举；顺带决定界面入口（新建世界的页签 / 导入 `.world.json`）。见 docs/16 §5 第 3 项。
+  - [ ] 角色定型（`shaped` 升 L2、立绘锚点）尚未接线。
 - [ ] 实现酒馆角色卡与世界书导入
   - [x] 确定性解析：V1 / V2 / V3 卡、PNG `chara` / `ccv3` 文本块、CCv3 与酒馆运行时两套世界书方言（`crates/if-app/src/importer/`）
   - [x] 联网核实 `docs/13 §6` 待核实清单 1–3，并补公开 CC BY 样本回归（`crates/if-app/tests/fixtures/`）
@@ -104,6 +109,8 @@
   - [x] 回合驱动接线（`crates/if-app/src/turn_runner.rs`）：确认的卡演绎一次即幂等、pending 卡拦住回合、无卡时退化为继续回合、严格度以默认值为中性点。
   - [x] 任务失败信息要说实话（`crates/if-pipeline/src/tasks/host.rs`）：区分「一次都没调用工具」与「调用了 N 次但参数没过」，并带上模型原话与最后一次参数错误；过程提示（撞 max_tokens / 重试）不再被 `turn_runner` 吞掉。
   - [x] 诊断入口 `cargo run -p if-app --example dump_turn_prompt -- <世界文件> [IF 文本]`：不联网 dump 上帝视图，排查「模型没有产出提议」。
-- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练（入口已就绪：发 IF → 确认裁定卡 → `run_turn`；由用户执行，见 docs/16 §5 第 2 项。2026-09-27 首次尝试失败在 T-impact——契约问题已修，待再验）
+  - [x] **作者世界的端到端回合**（`crates/if-app/src/authored/tests.rs`）：拿测试夹具「渡口」跑「建世界 → 确认裁定卡 → 五个任务 → 写事件」，并且**成对**验证——同一份剧本、同一个裁判，**有命题 → 决策键稳定；抽走命题 → 引擎如实报出「没有稳定决策键」**。把「命题是 IF 的着力点」钉成可执行的事实。
+  - [x] 作者世界加载器单测（`crates/if-app/src/authored/tests.rs`，10 项）：确定性、事件 ID 契约（预分配的 ID == 实际写出的 ID）、悬空引用 / 重复 ID 与规范键 / 未知字段三类报错、标量取值与完整取值两种写法。
+- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练（入口已就绪：发 IF → 确认裁定卡 → `run_turn`；由用户执行，见 docs/16 §5 第 2 项。2026-09-27 首次尝试失败在 T-impact——契约问题已修，待再验。**再验时建议先用「临江市」示例世界**，它有 8 条命题，T-impact 有键可填；那之前它得先能被建会话，见「把作者世界接进 `create_session`」）
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收
 - [ ] 记录已知限制并整理 v1 发布清单

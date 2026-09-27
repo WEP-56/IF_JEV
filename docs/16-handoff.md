@@ -1,7 +1,10 @@
 # IF 项目交接说明
 
 > 面向下一位接手者的快速恢复文档。设计细节以 `docs/00–15` 为准；本文件只记录当前工程状态、已验证入口和下一阶段顺序。
-> 最后核对：**2026-09-27**（把 `if-pipeline` 接上司机：新增 `tasks` 层五个 agent 任务 + `if-app::turn_runner` 回合驱动，`if-pipeline` 从「库 + 测试」变成「有调用方」）。此时 `main` = **`03fc8f9`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
+> 最后核对：**2026-09-27**（作者世界：`if-app::authored` —— 一份手写的世界包直接落成 `.ifworld`，
+> 补上导入路径产不出的**命题**；示例世界「临江市」与测试夹具「渡口」各一份，见 §5）。
+> 此前一次是同日把 `if-pipeline` 接上司机（`tasks` 层五个 agent 任务 + `if-app::turn_runner`）。
+> 此时 `main` = **`c315e42`**，工作区干净，**无 CI**（仓库没有 `.github/`）。
 
 ## 0. 冷启动速览（先读这一节）
 
@@ -25,7 +28,7 @@ T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    463 passed / 0 failed（if-pipeline 132、if-app 106）
+cargo test --workspace                    475 passed / 0 failed（if-pipeline 132、if-app 118）
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 345.47 kB）
@@ -42,14 +45,18 @@ cd app && npm run build                   通过（1916 模块 / 345.47 kB）
 | 输入 `IF xxxx` → 落裁定卡 → 确认写进事件日志 | ✅ 落卡已复验通过（2026-09-26，`725fff4` 修掉 schema 缺陷后）；确认那一步待验 |
 | 真实 Jev / LLM 的连通性与 smoke 判定（`test_llm` / `test_judge`） | ✅ 已真机验过，见 [14](14-Jev实测.md) |
 | 三种剩余的真实方言（V3 `assets` / `@@` 装饰器 / 独立 `lorebook_v3`） | ⬜ 用户已明确推迟（见 §4） |
-| 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **首次真机失败在 T-impact**（2026-09-27，契约问题已修，见 §3）→ **待再验**：确认裁定卡后应看到场景卡 + 正文按节拍逐段上屏 |
+| 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **首次真机失败在 T-impact**（2026-09-27，契约问题已修，见 §3）→ **待再验**：确认裁定卡后应看到场景卡 + 正文按节拍逐段上屏。再验时**建议先用「临江市」示例世界**——它有 8 条命题，T-impact 有键可填（首次失败的那张卡一条命题都没有） |
 
-**两件容易被误当成 bug 的事**（都是刻意的，别去「修」）：
+**三件容易被误当成 bug 的事**（都是刻意的，别去「修」）：
 
 1. **聊天记录不持久化**——`.ifworld` 里是**事件**，前端 `messages` 只是缓存。
    重开一条会话看到的是「开场白 + 一条现状摘要」，不是上次的对话原文。
 2. **侧栏里混着演示故事**（`initialStories`）——它们背后没有世界文件，是前端早期示例数据。
    真实会话排在它们前面，且只有真实会话能发 IF。把两者分开是下一刀。
+3. **示例世界「临江市」与那条演示故事「雨城纪事」同源同名**，但不是一回事：前者是
+   `examples/worlds/linjiang.world.json`，能被建会话；后者只是一段前端常量（第 2 条）。
+   侧栏分组做完之前，两者会同时出现在用户眼前——**别把它们合并**，那会丢掉「有世界文件 /
+   没有世界文件」这条区别。
 
 ## 1. 项目定位
 
@@ -73,6 +80,8 @@ crates/if-app/          Tauri 命令、事件、设置、密钥、世界工作�
   src/importer/         酒馆角色卡 / 世界书导入（card / lorebook / png / model / value）
   src/library.rs        导入结果 ↔ 世界库的映射（来源身份键、内容哈希、摘要）
   src/seed.rs           ImportedWorld → if-domain 的确定性播种（主体 / 设定条目；见 10 §3.0）
+  src/authored.rs       作者世界包 → if-domain 的确定性映射（主体 / 命题 / 事实 / 规则 / 设定 / 故事线）
+  examples/worlds/      作者世界包（`*.world.json`）与格式说明：示例「临江市」
   src/session.rs        会话的创建 / 列举 / 恢复 / 删除（选世界资产 → 写 .ifworld → 登记引用）
   src/slug.rs           名字 → 文件名 / ID 片段的共用规则（保留中文）
 crates/if-domain/       领域类型、事件补丁、投影、世界线、回合记录、裁定卡
@@ -502,6 +511,13 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
   命题 / 事实 / 规则全是 0（聂小倩实测：主体 1、设定条目 13、其余全 0）。
   所以回合跑的是**无命题候选**——决策键回退到候选 ID，本回合能跑通、跨世界线不可复现
   （`if-policy` 的 `unstable` 警告）。这不是 bug，是 T-parse 缺失的**可观测后果**（§5 第 1 项）。
+  **今天要一份有命题的世界，只能走作者世界包**（§5「已完成：作者世界」），
+  或者像 `turn_runner` 的测试那样手工 `sow_proposition`。
+- **作者世界还没接进应用**：`if-app::authored` 能把一份手写世界包落成 `.ifworld`，
+  但入口只有 `cargo run --example build_world`——`create_session` / 世界库只认导入结果
+  （`ImportedWorld`）。所以「临江市」现在**建不了会话**，模板页签也还没有（§5 第 3 项）。
+- **世界包的校验与引擎侧折叠是两道**：`authored::validate` 报出文件里**哪一类对象的哪一条**，
+  `append_batch` 那道只是「整批不写」。改格式时别只测一道——前者管作者体验，后者管数据安全。
 - **`{{user}}` 还没被处理**：真实卡（聂小倩）的 profile 与设定条目里留着裸 `{{user}}`，
   会**原样进视图**。D14 要求把它换成由世界推演的主角；在那之前，模型看到的是一个未解析的模板。
 - **`if-lore` 仍未创建**：世界书激活（[08 §5](08-视图与世界书.md)）的逻辑在 `if-pipeline::lore`
@@ -608,6 +624,32 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
   「还没有命题」的世界里不可满足；已修（见 §3 那条真机缺陷 + `dump_turn_prompt` 诊断入口）。
   **待再验一次。**
 
+### 已完成：作者世界（补上导入路径产不出的**命题**）
+
+- ✅ `if-app::authored`：`AuthoredWorld`（一份手写世界包）→ 事件的确定性映射。
+  顶层字段与 `if-domain` 的领域类型一一对应，只有一处刻意的不同——**凡是「由哪个事件引入」
+  的字段（`created_by` / `source`）都不在文件里**，由加载器回填。
+  写入顺序固定：**主体 → 命题 → 事实 → 规则 → 设定 → 故事线**；事件 ID 先算号再写，
+  与 `seed` 同一套契约（`Store::next_seq` → 预分配 → `append_batch`）。
+- ✅ **先校验再映射**：悬空引用（事实挂不存在的命题、规则作用于不存在的主体、条件里的命题 ID
+  不存在）、ID / 规范键重复、字段名打错（`deny_unknown_fields`）——**一次报出全部问题**，
+  并指出是哪一类对象的哪一条。引擎侧 `append_batch` 那道保险说不出文件里的位置，所以校验在这里。
+- ✅ `examples/build_world`：世界包 → `.ifworld`（`--check` 只校验）。它是 `authored` 目前
+  **唯一的非测试调用方**。
+- ✅ 示例世界 **「临江市」**（`examples/worlds/linjiang.world.json`）：主体 5 / 命题 8 / 事实 8 /
+  规则 3 / 设定 7 / 故事线 3。按 [01 §5](01-IF规则.md) 的**六种 IF 类型**各留了落点
+  （状态型 `c_shen.trust.c_zhou`、认知型 `c_zhou.knows_tampering`、规则型带机制与触发器、
+  真相型 `c_reservoir.data_tampered`〔secret〕……）。格式说明见同目录 `README.md`。
+- ✅ 测试夹具 **「渡口」**（`tests/fixtures/worlds/ferry.world.json`，2 / 3 / 3 / 1 / 2 / 1）
+  + **成对**的端到端测试（`src/authored/tests.rs`）：同一份剧本、同一个裁判，
+  **有命题 → 候选落在真实命题上、决策键稳定；抽走命题 → 引擎如实报出「没有稳定决策键」**。
+  这一对把「命题是 IF 的着力点」钉成一条可执行的事实，而不是文档里的一句话。
+- ✅ 顺手修：T-extract 的工具描述写「视图里 propositions 的 key」，而 `ViewState` 里根本没有
+  `propositions`——命题是以 `facts[].key` 暴露的（`impact.rs` 早已这么写）。这正是
+  §3 那条真机缺陷的同一类问题：**契约没对齐，模型只能编**。
+- ⚠️ **还没接进应用**：`create_session` 只认导入结果（`ImportedWorld`），作者世界目前只能经
+  `build_world` 落成文件。接进去是可做的下一步（见下第 3 项）。
+
 ### 下一步（按优先级）
 
 1. **T-parse / 语义抽取**（**当前最高优先**）：把设定条目里「承重的那一半」抽成命题 / 事实 /
@@ -622,14 +664,20 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
    > 2026-09-27 第一次尝试**失败在 T-impact**（契约问题，已修）。若再跑仍失败，
    > 报错现在会带上**模型原话 + 过程提示**（max_tokens / 重试），据此就能定位；
    > 视结果再决定正文要不要落成事件（§4）。
-3. **IF 导图 / 世界线面板接投影**：前端目前只重建了角色 / 世界观 / 设定条目；
+3. **把作者世界接进 `create_session`**（小，但让上面那条「建议先用临江市」变得可执行）：
+   `authored` 加载器已经写好了，缺的是三处接线——资产 `payload` 加一个判别字段、
+   `session::load` 认两种材料、`CreateRequest` 收一个「导入 / 作者」的枚举。
+   做完之后世界库里就能看到「临江市」，建会话、发 IF、推进回合一条龙；在那之前
+   它只能经 `cargo run --example build_world` 落成文件。
+   顺带该决定：作者世界在界面上的入口是「新建世界时多一个页签」，还是「导入 `.world.json`」。
+4. **IF 导图 / 世界线面板接投影**：前端目前只重建了角色 / 世界观 / 设定条目；
    `Story.map` 里的节点还是前端编的，没接世界线与分支。
-4. **收尾两把小刀**：侧栏把「真实会话」与「演示故事」分到不同分组；
+5. **收尾两把小刀**：侧栏把「真实会话」与「演示故事」分到不同分组；
    给个「整理世界文件」入口清理孤儿 `.ifworld`（见 §4）。
-5. **阈值校准**（[06 §2](06-裁决策略.md)，每模板约 40 条标注集）——v1 动工前的必做项。
+6. **阈值校准**（[06 §2](06-裁决策略.md)，每模板约 40 条标注集）——v1 动工前的必做项。
    `q.beat.violates_fact` 合规侧余量最小（实测合规 0.21 vs 阈值 0.3），优先。
    现在 `if-pipeline` 把阈值用在真实路径上了，校准的收益从「理论」变成「每回合都感觉得到」。
-6. ⏸️ **真实文件补测（剩余）**——独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、
+7. ⏸️ **真实文件补测（剩余）**——独立 `lorebook_v3`、酒馆运行时导出的 World Info JSON、
    含 V3 扩展字段的真实卡、带装饰器的卡（[13 §6.3](13-酒馆兼容.md)）。
    **用户 2026-09-26 明确说「暂时没空测试，晚点吧」**：别把它当成压着别人的待办，
    也别因为它没做就不敢动关键路径——这几项是**导出产物**，在酒馆里导出一次即可覆盖。
@@ -653,7 +701,10 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
    「确认裁定卡 → 推进一回合」这条链）、
    `crates/if-app/examples/dump_turn_prompt.rs`（诊断：把某个世界的上帝视图 dump 出来，
    排查「模型没有产出提议」的第一站）、
-   `crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、`seed.rs`、`session.rs`、`slug.rs`、
+   `crates/if-app/examples/build_world.rs` + `crates/if-app/examples/worlds/README.md`
+   （**作者世界包**的入口与格式：想看「一份适合 IF 的世界长什么样」，读 `linjiang.world.json`）、
+   `crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、`seed.rs`、`authored.rs`、
+   `session.rs`、`slug.rs`、
    `crates/if-store/src/library.rs`、`crates/if-store/src/store.rs`（看 `next_seq` 与 `append_batch`）、
    `app/src/library.ts`、`app/src/session.ts`、`app/src/projection.ts`、`app/src/App.tsx`
    （`playTurn` 把一回合摆到聊天区）、
