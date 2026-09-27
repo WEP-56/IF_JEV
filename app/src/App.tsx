@@ -23,13 +23,16 @@ import {
   toLibraryAssets,
 } from './library';
 import {
+  cancelTurn,
   createSession,
   deleteSession,
   listAllSessions,
   listSessions,
   openSession,
+  runTurn,
   type SessionRef,
   type SessionView,
+  type TurnReport,
 } from './session';
 import { formatWorldTime, toCharacters, toWorld } from './projection';
 import { isNative, tauriInvoke } from './ipc';
@@ -568,6 +571,85 @@ export default function App() {
     later(step, 250);
   };
 
+  /**
+   * 把一次推演的产物摆到聊天区。
+   *
+   * 顺序是刻意的：**先交代这一场要干什么，再上正文**——否则读者不知道这几段是
+   * 谁在什么场合说的。警告与被拦下来的节拍排在最前面，而不是折叠起来：
+   * 被静默丢掉的正文是「我以为我写的还在」的源头。
+   *
+   * 正文**按节拍上屏**（一拍一个段落，节拍之间留一点时间），因为节拍本来就是
+   * 这个世界里「一次推进」的最小单位（docs/04 §4）。
+   */
+  const playTurn = (sid: string, report: TurnReport, onDone: () => void) => {
+    const head: Message[] = [];
+    const scene = report.scene;
+    if (scene) {
+      head.push({
+        id: uid(),
+        role: 'system',
+        time: now(),
+        content: [
+          `场景 ${scene.id}｜目标：${scene.goal}`,
+          `视角 ${scene.pov}｜在场 ${scene.present.join('、') || '—'}｜停止条件：${scene.stop_condition}`,
+          ...(scene.forbidden_resolutions.length ? [`禁止结果：${scene.forbidden_resolutions.join('；')}`] : []),
+          ...scene.injections,
+        ].join('\n'),
+      });
+    }
+    head.push({
+      id: uid(),
+      role: 'system',
+      time: now(),
+      content: `任务：${report.tasks.map((task) => `${task.task}×${task.rounds}`).join(' · ')}｜写入事件 ${report.committed.length} 条`,
+    });
+    if (report.warnings.length) {
+      head.push({ id: uid(), role: 'system', time: now(), content: `推演提示：\n${report.warnings.map((w) => `· ${w}`).join('\n')}` });
+    }
+    if (report.blocked.length) {
+      head.push({
+        id: uid(),
+        role: 'system',
+        time: now(),
+        content: `有节拍没通过检查、没有上屏：\n${report.blocked.map((b) => `· 第 ${b.index} 拍：${b.reasons.join('；')}`).join('\n')}`,
+      });
+    }
+
+    const applyWorld = (s: Story): Story => ({
+      ...s,
+      updated: now(),
+      // 世界视图的来源是**投影**，所以刷新的是它，而不是 `world` / `characters` 那两个壳子。
+      projection: report.snapshot.projection,
+      characters: toCharacters(report.snapshot.projection),
+      world: toWorld(report.snapshot.projection, { name: s.world.name, genre: s.genre, summary: s.world.summary }),
+    });
+
+    if (!report.advanced) {
+      update(sid, (s) => ({
+        ...applyWorld(s),
+        messages: [...s.messages, ...head, { id: uid(), role: 'system', time: now(), content: report.completed ? '这一回合没有正文上屏（场景已收束）。' : '这一回合没有选出场景，世界没有推进。' }],
+      }));
+      onDone();
+      return;
+    }
+
+    const nid = uid();
+    update(sid, (s) => ({
+      ...applyWorld(s),
+      messages: [...s.messages, ...head, { id: nid, role: 'narrator', time: now(), content: '', streaming: true }],
+    }));
+    const beats = report.beats;
+    let shown = 0;
+    const step = () => {
+      shown += 1;
+      const done = shown >= beats.length;
+      patchMsg(sid, nid, (m) => ({ ...m, content: beats.slice(0, shown).map((beat) => beat.text).join('\n\n'), streaming: !done, choices: done ? [] : undefined }));
+      if (done) onDone();
+      else later(step, 240);
+    };
+    step();
+  };
+
   /* ---------- send event ---------- */
   const handleSend = (text: string, tag: string) => {
     const sid = story.id;
@@ -689,24 +771,49 @@ export default function App() {
     later(tick, 420);
   };
 
+  /**
+   * 确认裁定卡 → **真的推进一步**。
+   *
+   * 这两步是分开的，故意：`confirm_if` 只是把 IF 写进事件日志（世界还没动），
+   * 真正的推进是 `run_turn`（五个 agent 任务 + 两段驱动 + 落盘）。
+   * 所以在界面上它们是**一次点击的两段**，但失败要分开报——把「推演失败」说成
+   * 「确认失败」会把排查方向带偏（真机上吃过这个亏）。
+   */
   const handleConfirmIf = (input?: string) => {
     if (!nativeWorld?.pending_if) return;
+    const sid = story.id;
     setBusy(true);
-    void tauriInvoke<NativeWorldSnapshot>('confirm_if', input ? { input } : {})
-      .then((snapshot) => {
+    void (async () => {
+      try {
+        const snapshot = await tauriInvoke<NativeWorldSnapshot>('confirm_if', input ? { input } : {});
         setNativeWorld(snapshot);
-        update(story.id, (s) => ({
+        update(sid, (s) => ({
           ...s,
-          messages: s.messages.map((message) => message.id === pendingNativeMessageId.current ? { ...message, content: input?.trim() || message.content } : message)
-            .concat({ id: uid(), role: 'system', time: now(), content: `裁定卡已确认，IF 已提交到事件日志（seq ${snapshot.head_seq}）。` }),
+          messages: s.messages
+            .map((message) => (message.id === pendingNativeMessageId.current ? { ...message, content: input?.trim() || message.content } : message))
+            .concat({ id: uid(), role: 'system', time: now(), content: `裁定卡已确认，IF 已进入事件日志（seq ${snapshot.head_seq}）。正在推演这一回合…` }),
         }));
         pendingNativeMessageId.current = null;
-      })
-      .catch((error: unknown) => update(story.id, (s) => ({
-        ...s,
-        messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `确认裁定卡失败：${error instanceof Error ? error.message : String(error)}` }],
-      })))
-      .finally(() => setBusy(false));
+      } catch (error) {
+        update(sid, (s) => ({
+          ...s,
+          messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `确认裁定卡失败：${describe(error)}` }],
+        }));
+        setBusy(false);
+        return;
+      }
+      try {
+        const report = await runTurn();
+        setNativeWorld(report.snapshot);
+        playTurn(sid, report, () => setBusy(false));
+      } catch (error) {
+        update(sid, (s) => ({
+          ...s,
+          messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `推演失败：${describe(error)}` }],
+        }));
+        setBusy(false);
+      }
+    })();
   };
 
   const handleCancelIf = () => {
@@ -729,19 +836,41 @@ export default function App() {
       .finally(() => setBusy(false));
   };
 
+  /** 「按重释确认」也是确认：冲突处理完之后同样要推进一步（与 [`handleConfirmIf`] 同一条路）。 */
   const handleReinterpretIf = () => {
     if (!nativeWorld?.pending_if) return;
+    const sid = story.id;
     setBusy(true);
-    void tauriInvoke<NativeWorldSnapshot>('reinterpret_if')
-      .then((snapshot) => {
+    void (async () => {
+      try {
+        const snapshot = await tauriInvoke<NativeWorldSnapshot>('reinterpret_if');
         setNativeWorld(snapshot);
-        update(story.id, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `冲突已按重释处理，IF 已提交到事件日志（seq ${snapshot.head_seq}）。` }] }));
-      })
-      .catch((error: unknown) => update(story.id, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `重释 IF 失败：${error instanceof Error ? error.message : String(error)}` }] })))
-      .finally(() => setBusy(false));
+        update(sid, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `冲突已按重释处理，IF 已进入事件日志（seq ${snapshot.head_seq}）。正在推演这一回合…` }] }));
+        pendingNativeMessageId.current = null;
+      } catch (error) {
+        update(sid, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `重释 IF 失败：${describe(error)}` }] }));
+        setBusy(false);
+        return;
+      }
+      try {
+        const report = await runTurn();
+        setNativeWorld(report.snapshot);
+        playTurn(sid, report, () => setBusy(false));
+      } catch (error) {
+        update(sid, (s) => ({ ...s, messages: [...s.messages, { id: uid(), role: 'system', time: now(), content: `推演失败：${describe(error)}` }] }));
+        setBusy(false);
+      }
+    })();
   };
 
+  /**
+   * 主动停止。
+   *
+   * Tauri 模式下要**先**告诉后端——推演可能正在跑，不叫停的话它会继续跑完
+   * 并往聊天区加东西；那条消息会落在「已停止」之后，看起来像幽灵。
+   */
   const handleStop = () => {
+    if (isNative()) void cancelTurn().catch(() => undefined);
     clearTimers();
     setBusy(false);
     update(story.id, (s) => ({

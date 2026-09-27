@@ -88,7 +88,24 @@ impl Opening {
 }
 
 /// 跑第 6–9 步。
-pub fn open(judge: &dyn Judge, request: OpenRequest<'_>) -> Result<Opening, PipelineError> {
+pub fn open(judge: &dyn Judge, mut request: OpenRequest<'_>) -> Result<Opening, PipelineError> {
+    let scenes = std::mem::take(&mut request.scenes);
+    open_with(judge, request, move |_| scenes)
+}
+
+/// 与 [`open`] 相同，但场景候选在**第一段裁决之后**才交上来。
+///
+/// 这不是「调用者忘了合并」，而是流程本身的样子：T-scenes 得先看见哪些候选被骰子放行，
+/// 才谈得上提「能演什么」（docs/04 第 7 步在第 8 步之前）。所以把 6–9 之间那道缝
+/// 交回给调用方——和 [`resolve_with`] 把第 11 与第 12 步之间的缝交出去是同一个理由。
+pub fn open_with<F>(
+    judge: &dyn Judge,
+    request: OpenRequest<'_>,
+    propose_scenes: F,
+) -> Result<Opening, PipelineError>
+where
+    F: FnOnce(&ImpactOutcome) -> Vec<SceneProposal>,
+{
     let mut audit = Audit::new();
     let impact = candidates::adjudicate(
         judge,
@@ -107,7 +124,7 @@ pub fn open(judge: &dyn Judge, request: OpenRequest<'_>) -> Result<Opening, Pipe
         request.projection,
         request.settings,
         request.ctx,
-        request.scenes,
+        propose_scenes(&impact),
     );
     if let Some(temperature) = request.temperature {
         scene_request = scene_request.temperature(temperature);
@@ -178,6 +195,26 @@ impl SceneOutcome {
 
 /// 跑第 10–13 步。
 pub fn resolve(judge: &dyn Judge, request: ResolveRequest<'_>) -> Result<SceneOutcome, PipelineError> {
+    resolve_with(judge, request, |_round, observed| Ok(observed))
+}
+
+/// 与 [`resolve`] 相同，但允许在**节拍放行之后、对账之前**插入正文回收。
+///
+/// docs/04 的顺序是「11 逐节拍放行 → 12 从已展示的正文回收 → 13 对账提交」，
+/// 而第 12 步的输入（哪些节拍真的上屏了）只有第 11 步的产物才知道。
+/// 所以这里把 `extract` 交回给调用方，`request.observed` 作为它的**默认输入**传进去——
+/// 两条路径读的是同一个字段，不存在「两个来源」。
+///
+/// `extract` 返回 `Err` 时整段中止（编不下去了）；把回收失败降级成空列表是调用方的事，
+/// 因为那属于 docs/06 §9 的策略，不属于编排。
+pub fn resolve_with<F>(
+    judge: &dyn Judge,
+    request: ResolveRequest<'_>,
+    extract: F,
+) -> Result<SceneOutcome, PipelineError>
+where
+    F: FnOnce(&BeatRound, Vec<ObservedChange>) -> Result<Vec<ObservedChange>, String>,
+{
     let mut warnings: Vec<String> = Vec::new();
 
     // 场景必须与第一段选出来的一致，否则「掷骰选了 A，正文写的是 B」会静默发生。
@@ -225,7 +262,10 @@ pub fn resolve(judge: &dyn Judge, request: ResolveRequest<'_>) -> Result<SceneOu
     // ---- 对账（docs/02 §11）
     let (proposed, mut notes) = request.opening.proposed(request.projection);
     warnings.append(&mut notes);
-    let reconciliation = commit::reconcile(&proposed, &request.observed);
+    // 第 12 步：只回收**已经放行**的节拍——从被拦下来的节拍里回收，
+    // 等于把一件没人看见的事写进历史。
+    let observed = extract(&round, request.observed).map_err(PipelineError::invalid)?;
+    let reconciliation = commit::reconcile(&proposed, &observed);
     warnings.extend(reconciliation.warnings.iter().cloned());
 
     // ---- 组装并写出

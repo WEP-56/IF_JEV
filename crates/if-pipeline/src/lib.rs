@@ -4,20 +4,24 @@
 //! 视图编译（[`if_views`]）与裁决策略（[`if_policy`]）——接进回合流程（docs/04），
 //! 并产出可以写进事件日志的补丁。
 //!
-//! 这个 crate 刻意**不认识 LLM，也不认识存储**：
+//! ## 两层，一条边界
 //!
-//! - 需要模型的地方，只向 [`if_judge::Judge`] 发问（视图 + 问题）；
-//!   真实 Jev、LLM 裁判、测试桩在它眼里是同一个东西。
-//! - 需要叙事文本的地方，接收**提议**（候选、场景、计划、节拍），而不是自己生成；
-//!   从模型那里拿到提议是 agent 任务的事（docs/05），本 crate 只负责
-//!   「提议进来 → 判定出去 → 补丁出去」。
-//! - 产出的是 [`if_domain::event::EventDraft`]，写不写、写去哪由调用方（`if-app` 的
-//!   世界工作线程）决定。草稿里的 ID 由调用方按 `Store::next_seq()` 起顺号发，
-//!   与 `append_batch` 是同一条契约（见 [`commit::DraftCursor`]）。
+//! ```text
+//! tasks（+ driver）   认得 Provider、认得工具、认得提示词
+//! ───────────────────────────────────────────────  ← 信条在这里落地
+//! 编排核心            不认 LLM、不认网络、不认 SQLite
+//! ```
 //!
-//! 于是整个回合可以在**没有网络、没有数据库**的情况下被端到端测试：
-//! 测试桩给出固定概率，提议直接构造，断言落在事件序列与投影上。
-//! 这正是 docs/12 §9「回合流程测试：Judge 测试桩 + 模拟的 provider」要的东西。
+//! **编排核心**（`context` / `candidates` / `scenes` / `beats` / `commit` / `turn` / `audit`）
+//! 需要的模型只向 [`if_judge::Judge`] 发问，需要的叙事文本只接收**提议**，
+//! 产出是 [`if_domain::event::EventDraft`]。所以这一半可以在没有网络、没有数据库的
+//! 情况下端到端测试——这正是 docs/12 §9 要的东西。
+//!
+//! **[`tasks`]** 是另一半，也是整个 crate 里唯一认识 LLM 的地方：
+//! 它按 docs/05 §4 的任务目录，把投影编译成视图、发问、把工具参数收成提议。
+//! 产物交给编排核心，写不写、写去哪由调用方（`if-app` 的世界工作线程）决定。
+//! 草稿里的 ID 由调用方按 `Store::next_seq()` 起顺号发，与 `append_batch` 是同一条契约
+//! （见 [`commit::DraftCursor`]）。
 //!
 //! ## 各模块在回合里的位置
 //!
@@ -30,12 +34,13 @@
 //! T-plan 的场景计划           →  turn       引擎注入硬约束                 ScenePlan
 //! T-render 的正文            →  beats      逐节拍检查放行                 放行的节拍
 //! T-extract 的抽取 + 裁决结果 →  commit     对账 → 事件草稿                Vec<EventDraft>
-//! 以上全部                   →  turn       open() / resolve() 两段驱动
+//! 以上全部                   →  turn       open_with() / resolve_with() 两段驱动
 //! 三段判定                   →  audit      回合内唯一的判定序号游标
 //! ```
 //!
-//! [`turn::open`] 与 [`turn::resolve`] 之间夹着 T-plan——**顺序不能拧反**：
-//! 场景要先选出来，才谈得上给它写计划。两段之间是调用方的 agent 任务（还未实现）。
+//! [`turn::open_with`] 与 [`turn::resolve_with`] 之间夹着 T-plan——**顺序不能拧反**：
+//! 场景要先选出来，才谈得上给它写计划。两处钩子（裁决后提场景、放行后回收正文）
+//! 是流程本来的样子，不是可以省略的开关。
 //!
 //! ## 两条不可退让的性质
 //!
@@ -56,6 +61,7 @@ pub mod context;
 pub mod lore;
 pub mod question;
 pub mod scenes;
+pub mod tasks;
 pub mod turn;
 
 /// 各阶段共享的测试夹具：一个够小、但每种东西都有一份的世界。
@@ -80,7 +86,10 @@ pub use context::{activate_for_turn, subject_name, TurnContext, DEFAULT_RECENT_B
 pub use scenes::{
     SceneChoice, SceneProposal, SceneRequest, SceneScore, SceneVeto, DEFAULT_BALANCE_WINDOW,
 };
-pub use turn::{inject_constraints, open, record, OpenRequest, Opening, ResolveRequest, SceneOutcome};
+pub use turn::{
+    inject_constraints, open, open_with, record, resolve, resolve_with, OpenRequest, Opening,
+    ResolveRequest, SceneOutcome,
+};
 
 /// 回合编排中可能出现的失败。
 ///

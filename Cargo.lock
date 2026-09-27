@@ -1546,6 +1546,8 @@ dependencies = [
  "if-agent",
  "if-domain",
  "if-judge",
+ "if-pipeline",
+ "if-policy",
  "if-store",
  "keyring",
  "serde",
@@ -1579,6 +1581,8 @@ dependencies = [
 name = "if-pipeline"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "if-agent",
  "if-domain",
  "if-judge",
  "if-policy",

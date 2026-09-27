@@ -30,6 +30,10 @@ pub struct JevSettings {
     pub timeout_secs: u64,
 }
 
+/// 一致性严格度的默认值（%）。**它同时是换算成 [`if_policy::Strictness`] 时的中性点**——
+/// 见 `crate::turn_runner::strictness_from_percent`：默认值不该悄悄改变任何阈值。
+pub const DEFAULT_STRICTNESS: u8 = 70;
+
 /// 引擎策略的全局默认值（docs/11 §6）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -82,7 +86,7 @@ impl Default for JevSettings {
 
 impl Default for EngineSettings {
     fn default() -> Self {
-        EngineSettings { strictness: 70, causal_depth: 3, beat_retries: 2, auto_confirm_ruling: false }
+        EngineSettings { strictness: DEFAULT_STRICTNESS, causal_depth: 3, beat_retries: 2, auto_confirm_ruling: false }
     }
 }
 

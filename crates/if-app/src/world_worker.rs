@@ -1,7 +1,9 @@
 //! Single-world actor. The SQLite connection is created and used only on its owner thread.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +18,7 @@ use serde::Serialize;
 
 use crate::importer::ImportedWorld;
 use crate::seed::{self, SeedContext, SeedReport};
+use crate::turn_runner::{self, TurnConfig, TurnReport};
 
 enum Request {
     Snapshot(Sender<Result<WorldSnapshot, String>>),
@@ -36,6 +39,14 @@ enum Request {
     },
     CancelIf {
         reply: Sender<Result<WorldSnapshot, String>>,
+    },
+    /// 推进一个回合（docs/04 §1）：五个 agent 任务 + 两段驱动 + 落盘。
+    RunTurn {
+        config: Box<TurnConfig>,
+        /// 取消开关由**调用方**持有：回合会占住工作线程几十秒，
+        /// 排队在它后面的「取消」请求根本轮不到执行，所以它必须是另一个线程能直接置位的原子量。
+        cancel: Arc<AtomicBool>,
+        reply: Sender<Result<TurnReport, String>>,
     },
 }
 
@@ -174,6 +185,19 @@ impl WorldWorker {
                                     let result = cancel_if(&mut store, &thread_path);
                                     let _ = reply.send(result);
                                 }
+                                Request::RunTurn {
+                                    config,
+                                    cancel,
+                                    reply,
+                                } => {
+                                    let result = turn_runner::run(
+                                        &mut store,
+                                        &thread_path,
+                                        &config,
+                                        &cancel,
+                                    );
+                                    let _ = reply.send(result);
+                                }
                             }
                         }
                     }
@@ -264,6 +288,30 @@ impl WorldWorker {
             .map_err(|e| format!("世界工作线程已停止：{e}"))?;
         response.recv().map_err(|e| format!("重释 IF 失败：{e}"))?
     }
+
+    /// 推进一步：跑一个完整的 IF 回合，把正文、场景计划与提交的事件交回来。
+    ///
+    /// 这是「确认裁定卡之后」那半程的入口——在此之前，裁定卡只是把 IF 写进了事件日志，
+    /// 世界并没有动。`cancel` 由调用方持有，可以从任意线程置位来中止这一回合。
+    pub fn run_turn(
+        &self,
+        config: TurnConfig,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<TurnReport, String> {
+        let (reply, response) = mpsc::channel();
+        self.requests
+            .as_ref()
+            .ok_or_else(|| "世界工作线程已停止".to_owned())?
+            .send(Request::RunTurn {
+                config: Box::new(config),
+                cancel,
+                reply,
+            })
+            .map_err(|e| format!("世界工作线程已停止：{e}"))?;
+        response
+            .recv()
+            .map_err(|e| format!("推演回合失败：{e}"))?
+    }
 }
 
 impl Drop for WorldWorker {
@@ -310,7 +358,9 @@ fn sow(store: &mut Store, world: &ImportedWorld) -> Result<SeedReport, String> {
     Ok(plan.report)
 }
 
-fn snapshot(store: &Store, path: &Path) -> Result<WorldSnapshot, String> {
+/// 打开的文件现在长什么样。`if-app` 的命令面与回合执行都要用它，
+/// 所以留在本模块（构造 `WorldSnapshot` 的规则只有一处）。
+pub(crate) fn snapshot(store: &Store, path: &Path) -> Result<WorldSnapshot, String> {
     let line_id = store
         .active_line()
         .map_err(|e| e.to_string())?

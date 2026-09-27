@@ -1,8 +1,8 @@
 //! IF 桌面应用入口：Tauri 命令与事件（docs/12 §4）。
 //!
-//! 目前接入的是设置、密钥、连通性诊断、**世界库**（世界资产的持久化，docs/10 §2），
-//! 以及**会话的创建与恢复**（把世界资产播种成一个新世界，docs/10 §3）。
-//! 回合流程的其余部分（继续回合、观测、节拍渲染……）随 `if-pipeline` 一起接入。
+//! 接入的是设置、密钥、连通性诊断、**世界库**（世界资产的持久化，docs/10 §2）、
+//! **会话的创建与恢复**（把世界资产播种成一个新世界，docs/10 §3），
+//! 以及**回合推演**（确认裁定卡之后，把世界真的推进一步，docs/04 §1）。
 
 mod diagnostics;
 mod if_parser;
@@ -16,6 +16,8 @@ mod session;
 mod settings;
 /// 名字 → 文件名 / ID 片段的共用规则。
 pub mod slug;
+/// 回合执行：把 `if-pipeline` 的任务层接到世界文件上（docs/04 §1）。
+mod turn_runner;
 mod world_worker;
 
 use std::collections::HashMap;
@@ -34,6 +36,7 @@ use library::{AssetChange, AssetDetail};
 use secrets::{KeySlot, KeySource};
 use session::SessionView;
 use settings::{AppSettings, Slot};
+use turn_runner::{TurnConfig, TurnReport};
 use world_worker::{WorldSnapshot, WorldWorker};
 
 struct AppState {
@@ -42,7 +45,12 @@ struct AppState {
     /// 世界库（`library.db`）。世界资产与会话事件日志是两个对象，因此两个库（docs/10 §1）。
     library: Mutex<Library>,
     runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    world: Mutex<Option<WorldWorker>>,
+    /// 打开着的世界。`Arc<Mutex<..>>` 而不是裸 `Mutex`：回合推演要在 `spawn_blocking`
+    /// 里跑（它会把工作线程占住几十秒），而那个闭包必须是 `'static` 的。
+    world: Arc<Mutex<Option<WorldWorker>>>,
+    /// 当前回合的取消开关。**不放在 `world` 里面**：取消请求必须在回合跑着的时候
+    /// 也能生效，而那时 `world` 的锁正被回合自己拿着。
+    turn_cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -383,6 +391,47 @@ fn parse_if(input: String) -> Result<IfDraft, String> {
     if_parser::parse(&input)
 }
 
+/* ---------- 回合推演：确认裁定卡之后，把世界真的推进一步（docs/04 §1） ---------- */
+
+/// 跑一个完整的 IF 回合：T-impact → T-scenes → T-plan → T-render → T-extract。
+///
+/// 用户输入从**最近一张已确认、尚未演绎的裁定卡**取（`turn_runner::run`）——
+/// 于是「确认并锁定」之后紧接着调一次这里，就是完整的一步。
+///
+/// 回合在工作线程上跑得很久（含若干次真实模型调用），所以整段进 `spawn_blocking`；
+/// 它期间拿着的只是 `world` 的锁，取消按钮走的是另一个字段，不会被挡住。
+#[tauri::command]
+async fn run_turn(state: State<'_, AppState>) -> Result<TurnReport, String> {
+    let settings = state.snapshot();
+    let config = TurnConfig {
+        structure: slot_with_key(&settings, Slot::Structure),
+        narrative: slot_with_key(&settings, Slot::Narrative),
+        jev: settings.jev.clone(),
+        // 没有 Jev 密钥就退回「结构模型充当裁判」（D11），而不是让每一次判定都缺位。
+        jev_key: secrets::get(KeySlot::Jev).0.unwrap_or_default(),
+        strictness: settings.engine.strictness,
+    };
+    let world = state.world.clone();
+    let cancel = state.turn_cancel.clone();
+    // 上一次的取消不该毒死这一次。
+    cancel.store(false, Ordering::Relaxed);
+    blocking(move || {
+        let guard = world.lock().expect("world state poisoned");
+        guard
+            .as_ref()
+            .ok_or_else(|| "当前没有打开的世界".to_owned())?
+            .run_turn(config, cancel)
+    })
+    .await
+}
+
+/// 中止正在跑的回合。它是同步命令：只置一个原子位，不碰 `world` 的锁，
+/// 所以回合跑着的时候也立刻就生效。
+#[tauri::command]
+fn cancel_turn(state: State<'_, AppState>) {
+    state.turn_cancel.store(true, Ordering::Relaxed);
+}
+
 #[tauri::command]
 fn import_world_json(input: String) -> Result<importer::ImportedWorld, String> {
     importer::parse_json(&input)
@@ -512,7 +561,8 @@ pub fn run() {
                 settings_path,
                 library: Mutex::new(library),
                 runs: Mutex::new(HashMap::new()),
-                world: Mutex::new(None),
+                world: Arc::new(Mutex::new(None)),
+                turn_cancel: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -537,6 +587,8 @@ pub fn run() {
             reinterpret_if,
             cancel_if,
             parse_if,
+            run_turn,
+            cancel_turn,
             import_world_json,
             import_world_file,
             list_worlds,

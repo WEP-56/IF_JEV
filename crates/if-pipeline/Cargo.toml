@@ -12,10 +12,15 @@ if-domain.workspace = true
 if-views.workspace = true
 if-policy.workspace = true
 if-judge.workspace = true
+# `tasks` 是唯一与模型对话的地方（docs/05 §3）：`AgentLoopHost` 的回调签名、
+# `Provider`、`ToolSpec` 与工具 schema 校验都从这里来。
+if-agent.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# `AgentLoopHost` 的回调返回 `anyhow::Result`（移植自 Onemore），只能跟着用它。
+anyhow = "1"
 
 [dev-dependencies]
 if-store.workspace = true

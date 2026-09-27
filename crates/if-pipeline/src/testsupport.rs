@@ -211,6 +211,19 @@ pub fn lore() -> Vec<LoreEntry> {
     ]
 }
 
+/// 同一份夹具，但把设定条目也放进**投影**里。
+///
+/// [`lore`] 返回的是「交给回合上下文的那一份」（激活用），而 `projection.lore` 是
+/// 已经落进世界的那一份。按标题回指条目时看的是后者，
+/// 所以「按标题找条目」这类测试要用这个版本。
+pub fn projection_with_lore() -> Projection {
+    let mut projection = projection();
+    for entry in lore() {
+        projection.lore.insert(entry.id.clone(), entry);
+    }
+    projection
+}
+
 pub fn ctx(scene_index: u64) -> TurnContext {
     TurnContext::new(
         TurnId::numbered(1),

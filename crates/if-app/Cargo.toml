@@ -18,6 +18,10 @@ tauri-build = { version = "2", features = [] }
 if-agent.workspace = true
 if-domain.workspace = true
 if-judge.workspace = true
+# 一致性严格度（`Strictness`）的换算：设置里是 0–100，策略层要的是倍率。
+if-policy.workspace = true
+# 回合编排：确认裁定卡之后要靠它把世界真的推进一步（五个 agent 任务 + 两段驱动）。
+if-pipeline.workspace = true
 if-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true

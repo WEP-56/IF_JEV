@@ -101,3 +101,55 @@ export async function deleteSession(sessionId: string): Promise<SessionRef[]> {
 export async function openSession(sessionId: string): Promise<SessionView> {
   return tauriInvoke<SessionView>('open_session', { sessionId });
 }
+
+/* ---------- 回合推演（Rust `if-app-lib::turn_runner`） ---------- */
+
+/** Rust `if_app_lib::turn_runner::SceneView`。视角与在场存的是**名字**，不是 ID。 */
+export interface TurnScene {
+  id: string;
+  goal: string;
+  time_span: string;
+  pov: string;
+  present: string[];
+  required_beats: string[];
+  stop_condition: string;
+  /** 引擎注入的硬约束说明（比如受保护故事线的禁止项）。 */
+  injections: string[];
+  forbidden_resolutions: string[];
+}
+
+/** Rust `if_app_lib::turn_runner::TurnReport`：一次回合的产物。 */
+export interface TurnReport {
+  /**
+   * 世界是否真的推进了。`false` = 没选出场景（候选全被否决，或候选场景全被硬否决）——
+   * 这时 `beats` 是空的，界面要如实说「没有推进」，不能假装写了正文。
+   */
+  advanced: boolean;
+  /** 场景是否走到收束（停止条件达成）。 */
+  completed: boolean;
+  scene?: TurnScene | null;
+  /** 已放行的节拍，按放行顺序。正文就是它们拼起来的。 */
+  beats: { index: number; text: string }[];
+  /** 被拦下来的节拍。**要说出来**——被静默丢掉的正文是「我以为我写的还在」的源头。 */
+  blocked: { index: number; reasons: string[] }[];
+  tasks: { task: string; rounds: number }[];
+  warnings: string[];
+  /** 本回合写进事件日志的事件 ID。 */
+  committed: string[];
+  snapshot: WorldSnapshot;
+}
+
+/**
+ * 推进一步：跑一个完整的 IF 回合（T-impact → T-scenes → T-plan → T-render → T-extract）。
+ *
+ * 用户输入取自**最近一张已确认、尚未演绎的裁定卡**，所以正常的用法是
+ * 「确认并锁定」之后紧接着调它。它跑得很久（若干次真实模型调用），期间可以 `cancelTurn`。
+ */
+export async function runTurn(): Promise<TurnReport> {
+  return tauriInvoke<TurnReport>('run_turn');
+}
+
+/** 中止正在跑的回合。它只置一个原子位，所以立刻生效（不需要等当前回合跑完）。 */
+export async function cancelTurn(): Promise<void> {
+  return tauriInvoke<void>('cancel_turn');
+}
