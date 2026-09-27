@@ -310,3 +310,58 @@ fn the_task_catalogue_names_its_own_tools() {
     assert!(!TaskKind::Scenes.allows_empty());
     assert!(!TaskKind::Plan.allows_empty());
 }
+
+// ---------------------------------------------------------------- 失败要说实话
+
+fn run_impact_alone(provider: &ScriptedProvider) -> String {
+    let projection = testsupport::projection();
+    let resolver = crate::tasks::Resolver::new(&projection);
+    crate::tasks::run_proposal_task(
+        provider,
+        TaskKind::Impact,
+        crate::tasks::TaskPrompt::new("你是推演器。", "请提出候选。"),
+        &resolver,
+        crate::tasks::TaskInputs::default(),
+        &never(),
+        &mut |_| {},
+    )
+    .expect_err("空手而归必须报错")
+    .to_string()
+}
+
+/// 模型只说话、不调工具：报错必须点明这一点，并把**模型的原话**带出来。
+///
+/// 只回一句「没有产出提议」，用户根本分不清是模型答非所问、契约有问题、还是上游坏了
+/// ——`IfDraft::input` 那次翻车就是这么来的（docs/16）。
+#[test]
+fn a_task_that_never_calls_the_tool_says_so_and_quotes_the_model() {
+    let provider = ScriptedProvider::new(vec![
+        ScriptedTurn::text("请问您希望推进哪条线索？"),
+        ScriptedTurn::text("请提供更多信息。"),
+        ScriptedTurn::text("……"),
+        ScriptedTurn::text("抱歉，无法完成：视图里没有任何命题可供引用。"),
+    ]);
+    let message = run_impact_alone(&provider);
+    assert!(message.contains("一次都没有调用"), "{message}");
+    assert!(message.contains("propose_candidate"), "{message}");
+    assert!(message.contains("无法完成"), "要带上模型的原话：{message}");
+}
+
+/// 模型**调用了**工具、但每一次参数都没过校验：这是另一类失败，报错不能混为一谈。
+#[test]
+fn a_task_whose_calls_all_fail_validation_says_it_called_and_why() {
+    let bad = json!({ "content": "少了其余字段" });
+    let provider = ScriptedProvider::new(vec![
+        ScriptedTurn::tool("propose_candidate", bad.clone()),
+        ScriptedTurn::tool("propose_candidate", bad.clone()),
+        ScriptedTurn::tool("propose_candidate", bad.clone()),
+        ScriptedTurn::tool("propose_candidate", bad),
+    ]);
+    let message = run_impact_alone(&provider);
+    assert!(message.contains("调用了 4 次"), "{message}");
+    assert!(message.contains("参数"), "要说清是参数问题：{message}");
+    assert!(
+        !message.contains("一次都没有调用"),
+        "调用了就不能说没调用：{message}"
+    );
+}

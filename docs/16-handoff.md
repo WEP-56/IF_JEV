@@ -18,10 +18,14 @@ T-impact → 分层裁决 → 场景候选 → 导演选择 → 场景计划 →
 规则草案，接 `q.extract.faithful` 校验（见 §5 第 1 项）。这也是 `if-lore` 与 `importer/`
 迁位的触发条件（世界书激活现在住在 `if-pipeline::lore`）。
 
+> ⚠️ 2026-09-27 真机之后，它的性质变了：**不是「下一件该做的事」，而是「回合能不能跑的前提」**。
+> 世界没有命题时，T-impact 只能提出**无键候选**（决策键回退到候选 ID、跨世界线不可复现），
+> 而且最初连这一步都跑不过去（模型在空世界里无键可填、干脆不调工具——见 §3 那条真机缺陷）。
+
 **当前基线（动手前先跑一遍）**：
 
 ```text
-cargo test --workspace                    460 passed / 0 failed（if-pipeline 129、if-app 106）
+cargo test --workspace                    463 passed / 0 failed（if-pipeline 132、if-app 106）
 cargo clippy --workspace --all-targets    零 lint（只剩 E: 盘硬链接环境提示）
 cd app && npx tsc --noEmit                干净
 cd app && npm run build                   通过（1916 模块 / 345.47 kB）
@@ -38,7 +42,7 @@ cd app && npm run build                   通过（1916 模块 / 345.47 kB）
 | 输入 `IF xxxx` → 落裁定卡 → 确认写进事件日志 | ✅ 落卡已复验通过（2026-09-26，`725fff4` 修掉 schema 缺陷后）；确认那一步待验 |
 | 真实 Jev / LLM 的连通性与 smoke 判定（`test_llm` / `test_judge`） | ✅ 已真机验过，见 [14](14-Jev实测.md) |
 | 三种剩余的真实方言（V3 `assets` / `@@` 装饰器 / 独立 `lorebook_v3`） | ⬜ 用户已明确推迟（见 §4） |
-| 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **接线已完成，待真机验**：配好结构 / 叙事模型后确认裁定卡 → 应看到场景卡 + 正文按节拍逐段上屏 |
+| 一个回合真的推进一步（正文上屏、世界改变） | ⬜ **首次真机失败在 T-impact**（2026-09-27，契约问题已修，见 §3）→ **待再验**：确认裁定卡后应看到场景卡 + 正文按节拍逐段上屏 |
 
 **两件容易被误当成 bug 的事**（都是刻意的，别去「修」）：
 
@@ -213,11 +217,66 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 > 教训（与上面同类）：**模型答错的字段，先问「这事该不该问模型」**。
 > 这两处都不是模型不听话，是引擎把确定性的事外包了出去。
 
+**真机缺陷：T-impact 在「还没有命题」的世界里无键可填，模型干脆不调工具**（2026-09-27）
+
+把驱动接上后，第一次真机完整回合失败在第一步：
+
+```text
+推演失败：回合失败（T-impact）：任务 T-impact 没有产出任何提议：模型在 4 轮里都没有调用 propose_candidate
+```
+
+**根因不是模型**（同一个结构模型刚刚顺利落出了裁定卡），是**契约在空世界里不可满足**：
+
+- 播种只建**主体 + 设定条目**；命题 / 事实 / 规则是 T-parse 的产物，而 T-parse 还没做（见 §4）。
+  于是新建世界的 `Projection` 里 `propositions` / `facts` 全空。
+  实测聂小倩世界：17 条事件 = `world_created` 1 + `subject_created` 1 + `lore_added` 13 + `if_injected` 2，
+  展开成投影是**主体 1 / 命题 0 / 事实 0 / 规则 0 / 故事线 0 / 设定条目 13**。
+- 上帝视图（`tasks::impact::prompt`）对空字段有 `skip_serializing_if`，所以模型看到的 JSON
+  里**根本没有 `facts` 这个键**（诊断输出见下）；而提示词却写「依据与影响都写视图里的命题键」，
+  schema 更把 `affects` 描述成「**至少写一个**」。
+- 模型拿到的是「必须引用一个不存在的键，又不许编造」——它选择了不调用工具，4 轮提醒都没用。
+
+顺带两处错：
+
+1. 工具说明写的是 `propositions[].key`，**视图里根本没有这个字段**——命题在视图里以
+   `facts[].key` 出现。模型照着一个不存在的路径找，只会白找。
+2. 失败信息把「**一次都没调用**」与「**调用了但参数都没过**」说成同一句
+   （都是「都没有调用」）。这两类的修法完全相反：前者是契约 / 提示词，后者是 schema / 模型笔法。
+
+修法（`tasks/impact.rs` + `tasks/host.rs` + `turn_runner.rs`）：
+
+- **契约容得下空命题**：`affects` / `based_on` 明确允许空数组，字段引用改回 `facts[].key`。
+  这**不是**让模型随便填——是承认「世界还没有命题」是一个**合法状态**：引擎会退回用候选 ID
+  兜底决策键，并在 `if-policy` 里记一条 `unstable` 警告（本回合能跑通，跨世界线不可复现）。
+- **提示词把输出方式单列一条**：只能用工具作答、不要用自然语言解释。
+- **失败信息说实话**：`ProposalHost` 记下模型最后一次说的话、被拒的工具调用次数与最后一次
+  参数错误，`run_proposal_task` 据此给出「一次都没调用 / 调用了 N 次但参数没过」＋模型原话
+  （与 `IfDraft::input` 那次是同一条教训）。护栏：
+  `tasks::tests::a_task_that_never_calls_the_tool_says_so_and_quotes_the_model`、
+  `a_task_whose_calls_all_fail_validation_says_it_called_and_why`。
+- **过程提示不再被吞**：`turn_runner` 原先把所有 `AgentEvent` 丢进空闭包，
+  于是「输出撞到 max_tokens 上限」「上游重试」这些线索全丢了；现在收进回合警告、
+  失败时随错误信息一起带出。
+
+诊断入口（这次新增）：`cargo run -p if-app --example dump_turn_prompt -- <世界文件> [IF 文本]` ——
+不联网、不落盘，直接打印「模型到底收到了什么」。它把上面的结论从推测变成事实：
+聂小倩世界的上帝视图 8414 字符、11 条设定 + 1 个主体、**零命题**。
+
+> 教训：**说「必须先有 X 才能做 Y」的时候，先确认 X 在这个世界里存在**。
+> 驱动接通 ≠ 能玩——世界模型里没有命题，回合的第一步就是空中楼阁。
+> 这把 T-parse 从「下一件该做的事」变成了「回合能不能跑的前提」（见 §5 第 1 项）。
+>
+> 另一条：**两个不同的失败不要共用一句报错**。这次的报错文案本身就在误导排查方向。
+
 解析与导入（确定性、无网络）：
 
 - `parse_if` / `parse_if_model`：IF 预解析，输出导演指令标记、类型初判、时间锚点、作用范围、锁定建议、不承诺项与警告。
 - `import_world_json` / `import_world_file`：酒馆导入。自动识别 PNG（`chara` / `ccv3` 文本块，优先 `ccv3`）与 UTF-8 JSON；同时兼容 CCv3 规范与酒馆运行时两套字段方言；含装饰器剥离、`position` → 归段映射、宏检测（`{{user}}` 等）。条目字段按「顶层 → `extensions`」分层读取（真实卡把引擎状态放在 `extensions`，见 [13 §6.4](13-酒馆兼容.md)）。
 - `examples/inspect_card.rs`：对真实卡文件做导入体检（`cargo run -p if-app --example inspect_card -- <文件...>`），确定性、不联网、不落盘。
+- `examples/dump_turn_prompt.rs`：把某个真实 `.ifworld` 的**上帝视图** dump 出来
+  （`cargo run -p if-app --example dump_turn_prompt -- <文件> [IF 文本]`），确定性、不联网、不落盘。
+  任务报「模型没有产出提议」时**先看它**：视图里有几个命题 / 事实 / 主体，一眼就能判断
+  是「模型没干活」还是「契约在空世界里不可满足」。
 - `tests/library_roundtrip.rs`：真实 PNG 卡 → 解析 → 映射 → 落库 → 读回 → 重导幂等。
   样本在 `sk-example/`（不入库），**文件不在就跳过**，不会在别人的 clone 上跑出假红。
   这是 `inspect_card` 覆盖不到的那一段——它不落盘。
@@ -233,7 +292,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ### 回合编排（`if-pipeline`，[04](04-回合流程.md)）
 
-**一个可提交的 IF 回合已能端到端跑通（`cargo test -p if-pipeline`，129 项单测）**，
+**一个可提交的 IF 回合已能端到端跑通（`cargo test -p if-pipeline`，132 项单测）**，
 而且**接上了司机**：`tasks` 层把提议从模型拿回来，`if-app::turn_runner` 把它串进
 `world_worker`，界面上确认裁定卡之后能推进一个回合。
 
@@ -357,7 +416,7 @@ IF 流程（**裁定卡生命周期 + UI 都已实现**）：
 
 ```powershell
 cd E:\IF
-cargo test --workspace              # 当前 460 个测试通过（if-pipeline 129、if-app 106）
+cargo test --workspace              # 当前 463 个测试通过（if-pipeline 132、if-app 106）
 cargo clippy --workspace --all-targets   # 零 lint（只剩 E: 盘「不支持硬链接」的环境提示）
 
 cd E:\IF\app
@@ -439,6 +498,12 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
   `world_worker`，命令面新增 `run_turn` / `cancel_turn`。**但合同目前只用 scripted provider
   验证过**——真实 LLM / Jev 下的产出质量（候选是否合理、场景计划是否贴合、正文与节拍是否
   自然）属于主观叙事质量，必须真机验，别把「测试绿」当成「能玩」。
+- **世界模型在 T-parse 之前是空的**：导入一个世界只得到**主体 + 设定条目**；
+  命题 / 事实 / 规则全是 0（聂小倩实测：主体 1、设定条目 13、其余全 0）。
+  所以回合跑的是**无命题候选**——决策键回退到候选 ID，本回合能跑通、跨世界线不可复现
+  （`if-policy` 的 `unstable` 警告）。这不是 bug，是 T-parse 缺失的**可观测后果**（§5 第 1 项）。
+- **`{{user}}` 还没被处理**：真实卡（聂小倩）的 profile 与设定条目里留着裸 `{{user}}`，
+  会**原样进视图**。D14 要求把它换成由世界推演的主角；在那之前，模型看到的是一个未解析的模板。
 - **`if-lore` 仍未创建**：世界书激活（[08 §5](08-视图与世界书.md)）的逻辑在 `if-pipeline::lore`
   里已落地并被 `context::activate_for_turn` 调用，但按 [12 §3](12-工程架构.md) 它**该住在 `if-lore`**。
   迁移与 T-parse 是同一个触发条件（都要开始处理条目的语义），见 §5。
@@ -518,7 +583,7 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 ### 已完成：`if-pipeline`（一个可提交的 IF 回合）
 
 - ✅ 七个模块全部落地：`context` / `audit` / `candidates` / `scenes` / `beats` / `commit` / `turn`，
-  101 项单测（`cargo test -p if-pipeline`）；接上 `tasks` 层后共 129 项。
+  101 项单测（`cargo test -p if-pipeline`）；接上 `tasks` 层后共 132 项。
 - ✅ `EventDraft` 从 `if-store` 下沉到 `if-domain`——`if-pipeline` 不该为了写一个草稿而依赖 SQLite
   （`if-store::EventDraft` 的路径由 re-export 保持不变）。
 - ✅ 世界书激活接进回合（[08 §5](08-视图与世界书.md)）：`context::activate_for_turn` 是它第一个真实调用方。
@@ -538,19 +603,25 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
 - ✅ 前端：`session.ts` 的类型与 IPC，`App.tsx` 的 `playTurn`（场景卡 + 任务 + 警告 +
   被拦节拍 + 按节拍逐段上屏的正文）。
 - ✅ 顺手修掉场景 ID 重号覆盖（见 §3 第 7 个缺陷）。
-- ⚠️ **合同用 scripted provider 验证**：真实 LLM / Jev 下的连贯性未验——那是主观叙事质量，
-  由用户真机验收（见下面「下一步」第 2 项）。
+- ⚠️ **合同用 scripted provider 验证**；真实 LLM / Jev 下的连贯性由用户真机验收。
+  首次真机（2026-09-27，聂小倩卡）**失败在第一步 T-impact**——不是模型不听话，是契约在
+  「还没有命题」的世界里不可满足；已修（见 §3 那条真机缺陷 + `dump_turn_prompt` 诊断入口）。
+  **待再验一次。**
 
 ### 下一步（按优先级）
 
-1. **T-parse / 语义抽取**：把设定条目里「承重的那一半」抽成命题 / 事实 / 规则草案，
-   接 `q.extract.faithful` 校验（[10 §3.0](10-世界创建与导入.md)、[02 §9.1](02-世界模型.md)）。
+1. **T-parse / 语义抽取**（**当前最高优先**）：把设定条目里「承重的那一半」抽成命题 / 事实 /
+   规则草案，接 `q.extract.faithful` 校验（[10 §3.0](10-世界创建与导入.md)、[02 §9.1](02-世界模型.md)）。
    这也是 `if-lore` 与 `importer/` 迁位的触发条件（[12 §3](12-工程架构.md)）——
    世界书激活现在住在 `if-pipeline::lore`，该搬过去。
-2. **真机验一次完整回合**（配好结构 / 叙事模型密钥后由用户执行）：
+   **真机已经证明它不是「锦上添花」而是前提**：没有命题，回合的第一步只能提无键候选
+   （§3 那条真机缺陷）。
+2. **真机再验一次完整回合**（配好结构 / 叙事模型密钥后由用户执行）：
    发 `IF xxx` → 确认裁定卡 → 看场景卡与正文是否合理、节拍切分是否自然。
-   **这是唯一能证明「真正能玩」的一步**；我负责准备可运行入口 + 结果记录模板，
-   视结果再决定正文要不要落成事件（§4）。
+   **这是唯一能证明「真正能玩」的一步**；我负责准备可运行入口 + 结果记录模板。
+   > 2026-09-27 第一次尝试**失败在 T-impact**（契约问题，已修）。若再跑仍失败，
+   > 报错现在会带上**模型原话 + 过程提示**（max_tokens / 重试），据此就能定位；
+   > 视结果再决定正文要不要落成事件（§4）。
 3. **IF 导图 / 世界线面板接投影**：前端目前只重建了角色 / 世界观 / 设定条目；
    `Story.map` 里的节点还是前端编的，没接世界线与分支。
 4. **收尾两把小刀**：侧栏把「真实会话」与「演示故事」分到不同分组；
@@ -580,6 +651,8 @@ Rust 侧已由 `tests/library_roundtrip.rs` 覆盖，**但「PNG 文件 → base
    再按 `driver.rs` → `host.rs` → 各任务读）、
    `crates/if-app/src/turn_runner.rs`（**把司机接进 `if-app` 的回合驱动**，读它能看清
    「确认裁定卡 → 推进一回合」这条链）、
+   `crates/if-app/examples/dump_turn_prompt.rs`（诊断：把某个世界的上帝视图 dump 出来，
+   排查「模型没有产出提议」的第一站）、
    `crates/if-app/src/importer/`、`world_worker.rs`、`library.rs`、`seed.rs`、`session.rs`、`slug.rs`、
    `crates/if-store/src/library.rs`、`crates/if-store/src/store.rs`（看 `next_seq` 与 `append_batch`）、
    `app/src/library.ts`、`app/src/session.ts`、`app/src/projection.ts`、`app/src/App.tsx`

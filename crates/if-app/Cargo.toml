@@ -32,3 +32,8 @@ base64 = "0.22"
 flate2 = "1"
 tauri = { version = "2", features = [] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+
+[dev-dependencies]
+# `examples/dump_turn_prompt` 要直接把某个视图编译出来看——
+# 「模型到底收到了什么」是排查「任务没有产出提议」的第一手材料。
+if-views.workspace = true

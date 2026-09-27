@@ -181,31 +181,51 @@ pub(crate) fn run_with(
     let ctx = context(&projection, &line, &settings, input.clone(), store, strictness)?;
     let first_seq = store.next_seq().map_err(|e| e.to_string())?;
 
-    let mut emit = |_event: AgentEvent| {};
-    let outcome = run_if_turn(
-        TurnProviders::new(structure, narrative),
-        judge,
-        TurnRequest {
-            projection: &projection,
-            settings: &settings,
-            ctx: &ctx,
-            input,
-            source_event,
-            first_seq,
-            displayed_at: Some(now_secs()),
-            // v1 不推进世界时间：机制结算还没接，凭空往前拨一天是编故事不是模拟。
-            time: None,
-        },
-        cancel,
-        &mut emit,
-    )
-    .map_err(describe)?;
+    // 模型调用过程中的提示（撞到 max_tokens、上游重试）要能被用户看到——
+    // 否则「模型没产出提议」只剩一句结论，没有任何排查线索。
+    let mut notes: Vec<String> = Vec::new();
+    let outcome = {
+        let mut emit = |event: AgentEvent| match event {
+            AgentEvent::Notice(text) => notes.push(text),
+            AgentEvent::Error(text) => notes.push(format!("模型调用出错：{text}")),
+            _ => {}
+        };
+        run_if_turn(
+            TurnProviders::new(structure, narrative),
+            judge,
+            TurnRequest {
+                projection: &projection,
+                settings: &settings,
+                ctx: &ctx,
+                input,
+                source_event,
+                first_seq,
+                displayed_at: Some(now_secs()),
+                // v1 不推进世界时间：机制结算还没接，凭空往前拨一天是编故事不是模拟。
+                time: None,
+            },
+            cancel,
+            &mut emit,
+        )
+    };
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(failure) => {
+            let mut message = describe(failure);
+            if !notes.is_empty() {
+                message.push_str(&format!("；过程提示：{}", notes.join("；")));
+            }
+            return Err(message);
+        }
+    };
 
     if cancel.load(Ordering::Relaxed) {
         return Err("回合已取消".into());
     }
 
-    persist(store, &projection, &ctx, &outcome, path)
+    let mut report = persist(store, &projection, &ctx, &outcome, path)?;
+    report.warnings.extend(notes);
+    Ok(report)
 }
 
 /// 落盘：先写事件，再存回合记录。**这个顺序不能反**——

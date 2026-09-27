@@ -1549,6 +1549,7 @@ dependencies = [
  "if-pipeline",
  "if-policy",
  "if-store",
+ "if-views",
  "keyring",
  "serde",
  "serde_json",

@@ -85,7 +85,9 @@ impl TaskKind {
     fn reminder(self) -> String {
         match self {
             TaskKind::Impact => {
-                "你还没有提交任何候选。请逐条调用 propose_candidate；一条提议一次调用。".to_owned()
+                "你还没有提交任何候选。不要再解释——**直接调用 propose_candidate 工具**，\
+                 每一条候选调用一次；视图里没有命题时 affects / based_on 留空数组即可。"
+                    .to_owned()
             }
             TaskKind::Scenes => {
                 "你还没有提交任何场景候选。请为每个走向各调用一次 propose_scene。".to_owned()
@@ -188,6 +190,14 @@ pub struct ProposalHost<'a> {
     /// 模型「只说话、不调工具」的次数。上限由 [`TaskKind::max_rounds`] 给。
     nudges: u32,
     rounds: u32,
+    /// 模型最后说的一句自然语言。收尾失败时用它解释「它到底想干什么」——
+    /// 没有这一条，用户只看到「没有产出提议」，无从判断是模型答非所问还是契约有问题。
+    last_text: String,
+    /// 被调用了、但参数没通过校验的工具次数。
+    /// **与「一次都没调用」是两回事**：前者说明 schema 或模型笔法有问题，后者说明模型没干活。
+    rejected: u32,
+    /// 最后一次工具参数报错，原样带给用户（照抄 `diagnostics::draft_from_tool_args` 的做法）。
+    last_error: Option<String>,
 }
 
 impl<'a> std::fmt::Debug for ProposalHost<'a> {
@@ -213,6 +223,9 @@ impl<'a> ProposalHost<'a> {
             out,
             nudges: 0,
             rounds: 0,
+            last_text: String::new(),
+            rejected: 0,
+            last_error: None,
         }
     }
 
@@ -223,6 +236,21 @@ impl<'a> ProposalHost<'a> {
     /// 这次任务发起了几次模型调用。写进 `TaskRecord.rounds`（docs/03 §3）。
     pub fn rounds(&self) -> u32 {
         self.rounds
+    }
+
+    /// 模型最后说的那句自然语言（可能是空的）。失败时带进错误信息。
+    pub fn last_text(&self) -> &str {
+        &self.last_text
+    }
+
+    /// 有过几次工具调用没通过参数校验。
+    pub fn rejected(&self) -> u32 {
+        self.rejected
+    }
+
+    /// 最后一次工具参数报错的原文。
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 
     fn run(&mut self, call: &ToolCall) -> ToolOutcome {
@@ -289,6 +317,10 @@ impl AgentLoopHost for ProposalHost<'_> {
                 summary: call.arguments.to_string(),
             });
             let outcome = self.run(call);
+            if outcome.is_error() {
+                self.rejected += 1;
+                self.last_error = Some(outcome.output.model_text.clone());
+            }
             emit(AgentEvent::ToolCallFinished {
                 id: call.id.clone(),
                 name: call.name.clone(),
@@ -322,6 +354,11 @@ impl AgentLoopHost for ProposalHost<'_> {
         turn: &TurnOutput,
         _emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Option<Vec<ChatMessage>>> {
+        // 无论拉不拉回，都记住模型最后说的那句话：失败时要把它带出去。
+        let said = turn.message.text();
+        if !said.trim().is_empty() {
+            self.last_text = said;
+        }
         if self.out.collected > 0 || self.nudges >= self.kind.max_rounds() {
             return Ok(None);
         }
@@ -368,6 +405,9 @@ pub fn run_proposal_task(
 
     let task = kind.as_str();
     let rounds = host.rounds();
+    let rejected = host.rejected();
+    let last_error = host.last_error().map(str::to_owned);
+    let last_text = host.last_text().trim().to_owned();
     let workspace = host.into_workspace();
     if outcome.cancelled {
         return Err(TaskError::Cancelled { task });
@@ -379,13 +419,24 @@ pub fn run_proposal_task(
         });
     }
     if workspace.collected == 0 && !kind.allows_empty() {
-        return Err(TaskError::Incomplete {
-            task,
-            reason: format!(
-                "模型在 {rounds} 轮里都没有调用 {}",
-                kind.tool().name
-            ),
-        });
+        // 报错要说实话：**「一次都没调用」与「调用了但参数都没过」是两回事**，
+        // 修法完全不同（前者是契约/提示词的问题，后者是 schema 或模型笔法的问题）。
+        // 只回一句「没有产出提议」，等于让用户去猜（`IfDraft::input` 那次就是这么翻车的）。
+        let tool = kind.tool().name;
+        let mut reason = format!("模型在 {rounds} 轮里都没有成功登记任何 {tool}——");
+        if rejected > 0 {
+            reason.push_str(&format!("它调用了 {rejected} 次，但参数都没通过校验"));
+        } else {
+            reason.push_str("它一次都没有调用这个工具");
+        }
+        if let Some(error) = last_error {
+            reason.push_str(&format!("；最后一次的参数错误：{error}"));
+        }
+        if !last_text.is_empty() {
+            let said: String = last_text.chars().take(200).collect();
+            reason.push_str(&format!("；模型最后说的是：{said}"));
+        }
+        return Err(TaskError::Incomplete { task, reason });
     }
     Ok(TaskOutcome { workspace, rounds })
 }

@@ -78,12 +78,12 @@ pub fn tool() -> ToolSpec {
                 "based_on": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "这条候选依据的认知或事实：写命题键（视图里 propositions[].key 的值）。判断者只能看这些。"
+                    "description": "这条候选依据的认知或事实：写命题键（视图里 facts[].key 的值）。视图里还没有命题时留空数组——不要编造键，编出来的会被丢掉。"
                 },
                 "affects": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "这条候选会改变哪个命题：写命题键。至少写一个——它同时是这条候选的稳定标识。"
+                    "description": "这条候选会改变哪个命题：写命题键（视图里 facts[].key 的值）。视图里还没有命题时留空数组（引擎会退回用候选 ID 兜底并记一条警告）——**不要为了填满它而编造键**。"
                 }
             },
             "required": ["subject", "content", "internal", "shape", "options", "depends_on", "based_on", "affects"],
@@ -195,14 +195,19 @@ pub fn prompt(
         给定一条刚刚被用户锁定为世界前提的反事实断言，以及当前世界状态，\
         你要提出这条断言会引出的**具体候选**。\n\
         \n\
+        输出方式（必须遵守）：\n\
+        - 你只能用工具作答：每提出一条候选就调用一次 propose_candidate。\n\
+          不要用自然语言叙述、不要只给解释——**工具调用本身就是你的回答**。\n\
+        - 一条候选 = 一件具体的事，一句话。多条就多次调用。\n\
+        \n\
         规则：\n\
-        - 一条候选 = 一件具体的事，一句话。不要写解释、不要写后果的后果。\n\
-        - 每次调用 propose_candidate 只登记一条；多条就多次调用。\n\
         - 每个受强烈影响的主体至少给一条；世界层面的后果（时间、天气、场所）也要给。\n\
         - 几种结果**只能有一个发生**时用 exclusive，并在 options 里列出至少两项。\n\
           「会不会发生」这种二分用 occurs。\n\
         - 不要判断概率、不要决定哪些会发生——那是引擎的事。\n\
-        - 不要编造视图里没有的角色或命题；依据与影响都写视图里的命题键。"
+        - 不要编造视图里没有的角色。\n\
+        - based_on / affects 写视图里的**命题键**（facts[].key）。视图里还一条命题都没有时\
+          （新世界尚未解析出命题），两者都留空数组——不要为了填满它而编造键。"
         .to_owned();
 
     let mut request = ctx.view(ViewKind::God).task("T-impact");
@@ -327,6 +332,34 @@ mod tests {
         assert_eq!(
             out.candidates[0].options(),
             Some(["答应".to_owned(), "拒绝".to_owned(), "沉默".to_owned()].as_slice())
+        );
+    }
+
+    /// **新建世界还没有命题**（播种只做主体与设定条目，命题是 T-parse 的事）。
+    /// 那时模型无键可填，`based_on` / `affects` 只能留空——契约必须容得下这一形态，
+    /// 否则模型在空世界里既不能编键、又不能填空，只能放弃调用工具。
+    #[test]
+    fn a_world_without_propositions_may_leave_the_links_empty() {
+        let mut args = sample();
+        args["based_on"] = json!([]);
+        args["affects"] = json!([]);
+        assert!(
+            if_agent::tools::schema::validate(&tool().schema, &args).is_ok(),
+            "空命题世界里 based_on / affects 必须能留空"
+        );
+
+        let projection = crate::testsupport::projection();
+        let resolver = Resolver::new(&projection);
+        let mut out = Workspace::default();
+        accept(&args, &resolver, &mut out, &TaskInputs::default()).unwrap();
+
+        // 候选照样登记（引擎会用候选 ID 兜底决策键），但要如实提醒「它不稳定」。
+        assert_eq!(out.candidates.len(), 1);
+        assert!(out.candidates[0].affects.is_empty());
+        assert!(
+            out.warnings.iter().any(|w| w.contains("稳定决策键会缺失")),
+            "{:?}",
+            out.warnings
         );
     }
 }

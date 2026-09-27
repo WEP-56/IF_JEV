@@ -34,7 +34,7 @@
   - 已有 `confirm_if` / `reinterpret_if` / `cancel_if`，以及本地确定性冲突预检（`IfConflict` / `IfConflictResolution::Reinterpret`）。
   - 已增加确定性启发式 `parse_if` 草案（指令检测、类型初判、时间锚点、锁定建议）。
   - [x] 裁定卡 UI（`app/src/components/ChatView.tsx`）：`pending_if` 一出现就渲染卡片，措辞可编辑，取消 / 确认并锁定 / 按重释确认三个动作已接线。
-  - [ ] 真实 T-parse（语义级解析）与语义级冲突预检仍待完成——**当前最高优先**（docs/16 §5 第 1 项）。
+  - [ ] 真实 T-parse（语义级解析）与语义级冲突预检仍待完成——**当前最高优先，也是回合能否推进的前提**（没有命题，T-impact 只能提无键候选；见 docs/16 §5 第 1 项与 §3 的真机缺陷记录）。
 - [ ] 实现 IF 锁定、冲突处理和最小承诺（回溯型 v1 只做重释）
   - 已有确定性冲突预检的雏形（相反断言识别 + 重释）；锁定等级与保护期尚未接入。
 - [ ] 实现候选生成、Jev 判定、命运骰子和裁决策略
@@ -102,6 +102,8 @@
   - [x] 回合编排单测（`crates/if-pipeline`，129 项）：约束门 / 分层裁决 / 场景评分与骰子 / 逐节拍检查 / 对账与草稿顺序 / 判定 ID 全局唯一 / 事件带场景与节拍。
   - [x] 五个 agent 任务的 schema 对齐与发号（`crates/if-pipeline/src/tasks/`）：每个工具 schema 与「模型要填的结构体」集合相等；场景 ID 从世界已有场景接着发（`scene_ids_start_where_the_world_left_off`）。
   - [x] 回合驱动接线（`crates/if-app/src/turn_runner.rs`）：确认的卡演绎一次即幂等、pending 卡拦住回合、无卡时退化为继续回合、严格度以默认值为中性点。
-- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练（入口已就绪：发 IF → 确认裁定卡 → `run_turn`；由用户执行，见 docs/16 §5 第 2 项）
+  - [x] 任务失败信息要说实话（`crates/if-pipeline/src/tasks/host.rs`）：区分「一次都没调用工具」与「调用了 N 次但参数没过」，并带上模型原话与最后一次参数错误；过程提示（撞 max_tokens / 重试）不再被 `turn_runner` 吞掉。
+  - [x] 诊断入口 `cargo run -p if-app --example dump_turn_prompt -- <世界文件> [IF 文本]`：不联网 dump 上帝视图，排查「模型没有产出提议」。
+- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练（入口已就绪：发 IF → 确认裁定卡 → `run_turn`；由用户执行，见 docs/16 §5 第 2 项。2026-09-27 首次尝试失败在 T-impact——契约问题已修，待再验）
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收
 - [ ] 记录已知限制并整理 v1 发布清单
