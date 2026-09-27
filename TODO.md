@@ -17,15 +17,15 @@
 
 - [x] 创建 Rust workspace 与 IF crate 划分（先落 `if-domain` / `if-store`，其余按需再建）
 - [x] 接入 Onemore agent loop（`if-agent`：loop、三种 provider 含 Chat Completions、工具与 schema 校验）
-- [ ] `IfTaskHost` 与五个 agent 任务（T-impact / T-scenes / T-plan / T-render / T-extract）——`if-pipeline` 已就位，只差这一层把提议喂进去（见 docs/16 §5 第 1 项）
+- [x] `IfTaskHost` 与五个 agent 任务（T-impact / T-scenes / T-plan / T-render / T-extract）——`if-pipeline::tasks` 提供五个任务，`if-app::turn_runner` 串成一条回合并接进 `world_worker`（见 docs/16 §5「已完成：把 `if-pipeline` 接上司机」）。
 - [x] 建立领域类型与 serde schema
 - [x] 建立 SQLite 事件日志、投影和世界线存储
 - [x] 建立 Judge trait、Jev 后端与测试桩（`if-judge`：Jev、LLM 裁判、测试桩、重试）
 - [x] 接通桌面端真实 LLM 工具调用与 Jev 判定诊断入口（真实账号验收仍待用户）
-- [ ] 建立 Tauri 命令、事件和单世界工作线程
+- [x] 建立 Tauri 命令、事件和单世界工作线程
   - [x] 世界生命周期命令：`open_world` / `close_world` / `get_world_snapshot`，世界 SQLite 连接由专属线程持有。
   - [x] **会话创建与恢复**：`create_session`（选世界资产 → 播种出新的 `.ifworld` → 登记 `world_sessions` 引用）/ `list_sessions` / `open_session`。`create_world` 已删除——建会话必须先选世界（docs/10 §3）。
-  - [ ] 聊天回合命令和前端状态接入仍待完成。
+  - [x] **聊天回合命令与前端接入**：`run_turn` / `cancel_turn`（`world_worker` 的 `RunTurn` 请求自带取消开关），前端 `runTurn` + `playTurn`（场景卡 + 任务 + 警告 + 被拦节拍 + 按节拍上屏的正文）。
 
 ## 核心回合
 
@@ -34,21 +34,21 @@
   - 已有 `confirm_if` / `reinterpret_if` / `cancel_if`，以及本地确定性冲突预检（`IfConflict` / `IfConflictResolution::Reinterpret`）。
   - 已增加确定性启发式 `parse_if` 草案（指令检测、类型初判、时间锚点、锁定建议）。
   - [x] 裁定卡 UI（`app/src/components/ChatView.tsx`）：`pending_if` 一出现就渲染卡片，措辞可编辑，取消 / 确认并锁定 / 按重释确认三个动作已接线。
-  - [ ] 真实 T-parse（语义级解析）与语义级冲突预检仍待完成。
+  - [ ] 真实 T-parse（语义级解析）与语义级冲突预检仍待完成——**当前最高优先**（docs/16 §5 第 1 项）。
 - [ ] 实现 IF 锁定、冲突处理和最小承诺（回溯型 v1 只做重释）
   - 已有确定性冲突预检的雏形（相反断言识别 + 重释）；锁定等级与保护期尚未接入。
 - [ ] 实现候选生成、Jev 判定、命运骰子和裁决策略
   - [x] 确定性裁决部分已落地（`crates/if-policy`）：阈值表与一致性严格度、命运骰子的决策键生成与抽样（发生类 / 互斥类 / 数值机制）、按 `depends_on` 的分层拓扑排序（≤3 层因果深度，超出的推迟或转趋势）、观察带与趋势转化、导演评分与场景选择。
   - [x] **把 Jev 的判定接进裁决**（`if-pipeline::candidates`）：约束门（在人物 / 知识缺口，只比阈值不掷骰）→ 发生类与互斥类判定 → 按 `depends_on` 分层裁决；被否决但压力够的转趋势。
-  - [ ] 候选生成（T-impact）：由 agent 任务从「已锁定的 IF + 当前投影」提出候选，喂 `candidates::adjudicate`。
+  - [x] 候选生成（T-impact，`if-pipeline::tasks::impact`）：从「已锁定的 IF + 当前投影」提出候选（上帝视图），喂 `candidates::adjudicate`。
 - [ ] 实现场景计划、节拍检查和展示边界
   - [x] 场景候选与导演选择（`if-pipeline::scenes`）：受保护故事线的硬否决 → Jev 四项 + 引擎四项评分 → `scene_select@<叙述序号>` 骰子抽取。
   - [x] 逐节拍检查（`if-pipeline::beats`）：事实 / 规则 / 认知边界 / 本场景禁止项 / 未批准秘密 / 停止条件 / 节拍目标；重试上限 2。
-  - [ ] 场景计划（T-plan）与正文切节拍（T-render）由 agent 任务提供——`if-pipeline` 只接收已经切好的 `ScenePlan` / `BeatProposal`。
+  - [x] 场景计划（T-plan）与正文切节拍（T-render）由 agent 任务提供（`tasks::plan` / `tasks::render`，`render` 用分隔标记切节拍）——`if-pipeline` 本身只接收已经切好的 `ScenePlan` / `BeatProposal`。
   - [ ] 展示背压（未裁决节拍上限）属流式读取侧，不在 `if-pipeline` 内（见 docs/04 §4.7）。
 - [ ] 实现正文回收与 Proposed / Observed / Committed 对账
   - [x] 对账落地（`if-pipeline::commit`）：docs/02 §11 四条规则 + 「同命题保留锁定最强的那条」→ 固定顺序的事件草稿（`DraftCursor` 先算号再写）。
-  - [ ] 正文回收（T-extract）：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对；正文本身存不存成事件待 T-render 接入后再定（docs/16 §4）。
+  - [x] 正文回收（T-extract，`tasks::extract`）：从已展示正文抽 `ObservedChange`，`q.extract.faithful` 校对；正文本身存不存成事件待真机看过 T-render 的产出后再定（docs/16 §4）。
 - [ ] 实现继续回合、观测和基础后台结算
 
 ## 视图与导入
@@ -81,9 +81,9 @@
 - [x] 实现新建会话流程：选世界 → 有会话时先问用哪个 → 真建 `.ifworld` → 重建世界视图（`WorldPicker` / `SessionPicker`）
 - [x] 会话列表落到界面：启动读 `library.db`（`list_all_sessions`）→ 侧栏列**占位** → 点开才载入世界文件；删除会话连引用与世界文件一起删（`delete_session`）。**修掉「建完会话重启就找不到」的真机 bug**（docs/10 §3.0）。
 - [ ] 把「真实会话」与演示故事（`initialStories`）在侧栏里分开——现在排在同一个列表里
-- [ ] 实现裁定卡、推演卡和按节拍展示
+- [x] 实现裁定卡、推演卡和按节拍展示
   - [x] 裁定卡（`ChatView.tsx`，含冲突展示与重释入口）。
-  - [ ] 推演卡与按节拍展示：`if-pipeline` 已产出节拍与对账结果，但没有 Tauri 命令、前端拿不到，也没人把它画出来（见 docs/16 §4）。
+  - [x] 推演卡与按节拍展示：`run_turn` 产出 `TurnReport`，前端 `playTurn` 落场景卡 + 任务 + 警告 + 被拦节拍，正文按节拍逐段上屏（真机连贯性仍待用户验收）。
 - [ ] 实现角色、世界、趋势和 IF 导图面板
   - [x] 角色 / 世界名 / 设定条目 / 规则改由**投影**重建（`app/src/projection.ts`），设定条目在「世界」页签下按归段显示。
   - [ ] 趋势与 IF 导图（世界线）尚未接投影。
@@ -99,7 +99,9 @@
   - [x] 播种确定性（`seed.rs`，21 项）与会话创建 / 列举 / 恢复 / 删除（`session.rs`，13 项，真实文件 + 真实 SQLite）。
   - [x] 工具 schema 校验（`crates/if-agent/src/tools/schema.rs`：`schema_failures_never_reach_execute`）。
   - [x] **回合级的端到端重放**：同一事件序列 + 同一裁决得到同一个投影——`if-pipeline/src/turn/tests.rs::replaying_the_same_turn_reconstructs_the_same_projection` 用**真实 SQLite** 跑两遍，断言两份投影逐字节相同。
-  - [x] 回合编排单测（`crates/if-pipeline`，101 项）：约束门 / 分层裁决 / 场景评分与骰子 / 逐节拍检查 / 对账与草稿顺序 / 判定 ID 全局唯一 / 事件带场景与节拍。
-- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练
+  - [x] 回合编排单测（`crates/if-pipeline`，129 项）：约束门 / 分层裁决 / 场景评分与骰子 / 逐节拍检查 / 对账与草稿顺序 / 判定 ID 全局唯一 / 事件带场景与节拍。
+  - [x] 五个 agent 任务的 schema 对齐与发号（`crates/if-pipeline/src/tasks/`）：每个工具 schema 与「模型要填的结构体」集合相等；场景 ID 从世界已有场景接着发（`scene_ids_start_where_the_world_left_off`）。
+  - [x] 回合驱动接线（`crates/if-app/src/turn_runner.rs`）：确认的卡演绎一次即幂等、pending 卡拦住回合、无卡时退化为继续回合、严格度以默认值为中性点。
+- [ ] 用真实 Jev / LLM 配置完成一轮端到端演练（入口已就绪：发 IF → 确认裁定卡 → `run_turn`；由用户执行，见 docs/16 §5 第 2 项）
 - [ ] 由用户完成真实界面流程、文案和叙事质量验收
 - [ ] 记录已知限制并整理 v1 发布清单
