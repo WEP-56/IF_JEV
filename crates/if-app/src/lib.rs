@@ -11,6 +11,9 @@ pub mod importer;
 pub mod library;
 /// 导入结果 → `if-domain` 的确定性映射：会话创建时的播种（docs/10 §3）。
 pub mod seed;
+/// 作者世界：一份手写世界包（主体 / 命题 / 事实 / 规则 / 设定 / 故事线）→ 事件。
+/// 与 `seed` 互补：那条路不能猜，这条路不用猜（见模块文档）。
+pub mod authored;
 mod secrets;
 mod session;
 mod settings;

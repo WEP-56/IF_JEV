@@ -1,0 +1,352 @@
+{
+  "name": "临江市",
+  "genre": "现实 · 灾难 · 群像",
+  "summary": "长江中游的一座中型城市，老城区沿江低洼、新区依山而建。梅雨季的第一天夜里，雨开始下。这座城市的每一条排水渠、每一处堤段、每一份报表，都将在接下来的三十天里被雨水逐一过问。",
+
+  "settings": {
+    "seed": 20310617,
+    "narrative_style": "文学叙事 · 白描",
+    "narrative_pov": "third_limited",
+    "mechanic_step": "day",
+    "director_style": "均衡",
+    "mode": "sandbox"
+  },
+
+  "subjects": [
+    {
+      "id": "c_shen",
+      "kind": "character",
+      "name": "沈知遥",
+      "aliases": ["小沈"],
+      "profile": "二十三岁，水文站见习观测员，分配到临江不到一年。习惯用数字描述世界——水位、流速、误差范围——直到第一场暴雨让她第一次感到数字的无力。随身带一本防水记录本，字写得极小极密。",
+      "voice": "「三号水位计，22.9。」她念数字的时候没有语气，像在读别人的事。",
+      "tier": "foreground"
+    },
+    {
+      "id": "c_zhou",
+      "kind": "character",
+      "name": "周望川",
+      "aliases": ["老周"],
+      "profile": "临江水文站站长，退伍工程兵，在这条江边守了二十七年。九八年抗洪时左腿落下旧伤，一到阴雨天就疼——比任何气象雷达都先知道天气要变。他知道这座城市每一条排水渠的走向，也知道哪一处的堤最薄。",
+      "voice": "他说话很慢，一句一句往外挤，像是每句话都要先在心里称一遍分量。",
+      "tier": "foreground",
+      "shaped": true
+    },
+    {
+      "id": "c_lin",
+      "kind": "character",
+      "name": "林曜",
+      "aliases": [],
+      "profile": "三十二岁的市应急办副主任。擅长在会议上把坏消息说成好消息，擅长让人觉得自己被重视了。他对上游水库的真实情况似乎知道得比报告里写的多——这一点他自己从不提起。",
+      "voice": "「形势总体可控。」他说这句话的时候从不看人，而是看着窗外。",
+      "tier": "active"
+    },
+    {
+      "id": "c_reservoir",
+      "kind": "location",
+      "name": "青石水库",
+      "aliases": ["上游水库"],
+      "profile": "临江市上游四十公里的大型水库，负责调蓄与发电，同时是下游三十万人的最后一道屏障。库容曲线是公开数据，出库流量每六小时上报一次。",
+      "tier": "dormant"
+    },
+    {
+      "id": "c_office",
+      "kind": "faction",
+      "name": "市应急办",
+      "aliases": [],
+      "profile": "临江市防汛抗旱指挥部的实际执行机构。掌握物资调拨、预警发布与疏散决策的权力，也承担「不能引起恐慌」的默契。对外通报必须由它统一发布。",
+      "tier": "dormant"
+    }
+  ],
+
+  "propositions": [
+    {
+      "id": "p_rain_days",
+      "key": "world.rain_days",
+      "text": "本轮降雨已持续的天数",
+      "subjects": [],
+      "kind": "state",
+      "value_type": { "type": "scalar", "min": 0, "max": 60, "unit": "天" },
+      "internal": false
+    },
+    {
+      "id": "p_river_level",
+      "key": "c_reservoir.level",
+      "text": "临江水文站断面的江水位（米）",
+      "subjects": ["c_reservoir"],
+      "kind": "state",
+      "value_type": { "type": "scalar", "min": 15, "max": 35, "unit": "m" },
+      "internal": false
+    },
+    {
+      "id": "p_tampered",
+      "key": "c_reservoir.data_tampered",
+      "text": "青石水库的出库数据被人为篡改过",
+      "subjects": ["c_reservoir"],
+      "kind": "occurrence",
+      "value_type": { "type": "bool" },
+      "internal": false
+    },
+    {
+      "id": "p_shen_knows",
+      "key": "c_shen.knows_tampering",
+      "text": "沈知遥知道出库数据被人动过",
+      "subjects": ["c_shen"],
+      "kind": "state",
+      "value_type": { "type": "bool" },
+      "internal": true
+    },
+    {
+      "id": "p_zhou_knows",
+      "key": "c_zhou.knows_tampering",
+      "text": "周望川知道出库数据被人动过",
+      "subjects": ["c_zhou"],
+      "kind": "state",
+      "value_type": { "type": "bool" },
+      "internal": true
+    },
+    {
+      "id": "p_trust",
+      "key": "c_shen.trust.c_zhou",
+      "text": "沈知遥对周望川的信任",
+      "subjects": ["c_shen", "c_zhou"],
+      "kind": "relation",
+      "value_type": { "type": "enum", "values": ["信任", "动摇", "怀疑", "失望"] },
+      "internal": true
+    },
+    {
+      "id": "p_evacuation",
+      "key": "c_office.evacuating",
+      "text": "低洼区是否已经开始组织疏散",
+      "subjects": ["c_office"],
+      "kind": "state",
+      "value_type": { "type": "bool" },
+      "internal": false
+    },
+    {
+      "id": "p_morale",
+      "key": "world.morale",
+      "text": "民心（0–100，越高越安定）",
+      "subjects": ["c_office"],
+      "kind": "state",
+      "value_type": { "type": "scalar", "min": 0, "max": 100 },
+      "internal": false
+    }
+  ],
+
+  "facts": [
+    {
+      "prop": "p_rain_days",
+      "value": 1,
+      "lock": "L0",
+      "visibility": "public",
+      "valid_from_days": 1
+    },
+    {
+      "prop": "p_river_level",
+      "value": 22.1,
+      "lock": "L0",
+      "visibility": "public"
+    },
+    {
+      "prop": "p_tampered",
+      "value": true,
+      "lock": "L2",
+      "visibility": "secret"
+    },
+    {
+      "prop": "p_shen_knows",
+      "value": false,
+      "lock": "L0",
+      "visibility": "private"
+    },
+    {
+      "prop": "p_zhou_knows",
+      "value": true,
+      "lock": "L1",
+      "visibility": "private"
+    },
+    {
+      "prop": "p_trust",
+      "value": "信任",
+      "lock": "L0",
+      "visibility": "private"
+    },
+    {
+      "prop": "p_evacuation",
+      "value": false,
+      "lock": "L0",
+      "visibility": "public",
+      "valid_from_days": 1
+    },
+    {
+      "prop": "p_morale",
+      "value": 80,
+      "lock": "L0",
+      "visibility": "public",
+      "valid_from_days": 1
+    }
+  ],
+
+  "rules": [
+    {
+      "id": "rule_rain",
+      "text": "本轮暴雨会持续三十天",
+      "scope": [],
+      "active_from_days": 1,
+      "mechanics": [
+        {
+          "id": "m_rain_days",
+          "target": "p_rain_days",
+          "per": "step",
+          "delta": { "min": 1, "max": 1 }
+        },
+        {
+          "id": "m_river_rise",
+          "target": "p_river_level",
+          "per": "step",
+          "delta": { "min": 0.4, "max": 1.2 }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "inv_rain_weather",
+          "text": "持续期内，天气始终是暴雨",
+          "check": { "kind": "semantic_only", "template": "q.beat.violates_rule" }
+        }
+      ],
+      "constraints": ["q.beat.violates_rule"],
+      "boundaries": [
+        "第三十一天起，天气由世界推演，不受本条约束",
+        "「暴雨」指持续强降雨，不排除短暂雨势转小——这算不算中断【用户确认】"
+      ]
+    },
+    {
+      "id": "rule_flood",
+      "text": "江水位超过 28.5 米时，老城区开始内涝",
+      "scope": [],
+      "triggers": [
+        {
+          "id": "t_flood",
+          "when": { "op": "compare", "prop": "p_river_level", "cmp": "gt", "value": 28.5 },
+          "produces": { "kind": "candidate", "text": "老城区低洼处开始内涝，南门街首当其冲" }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "inv_flood_threshold",
+          "text": "水位在 28.5 米以下时，老城区不应出现成规模的内涝",
+          "check": { "kind": "semantic_only", "template": "q.beat.violates_rule" }
+        }
+      ],
+      "constraints": ["q.beat.violates_rule"],
+      "boundaries": ["28.5 米是水文站的警戒值，不是堤防的极限值"]
+    },
+    {
+      "id": "rule_bulletin",
+      "text": "对外通报必须由市应急办统一发布，任何个人不得先行公开数据",
+      "scope": ["c_office"],
+      "constraints": ["q.beat.violates_rule"],
+      "boundaries": [
+        "把数据交给记者、发到网上、或在自己家里写下这些数字，算不算「公开」【用户确认】",
+        "水文人向本单位上报不在此列"
+      ]
+    }
+  ],
+
+  "lore": [
+    {
+      "id": "lore_town",
+      "title": "临江市",
+      "content": "长江中游的一座中型城市，人口约三百万。新城区依托山势而建，排水按三十年一遇设计；老城区则是沿江的旧工业带，街巷低矮，最靠江的南门街地面高程只有 24 米出头。梅雨季从六月下旬开始，往年最长不过十来天。",
+      "keys": ["临江", "老城", "南门街"],
+      "constant": true,
+      "order": 0,
+      "section": "world"
+    },
+    {
+      "id": "lore_station",
+      "title": "临江水文站",
+      "content": "建在临江大桥下游两公里处的二层小楼，一楼是值班室和器材间，二楼摆着三台水位计终端。最老的一台还是九八年装上的。站里常年只有两个人。警戒水位 26.0 米，保证水位 29.5 米。",
+      "keys": ["水文站", "值班室", "水位计"],
+      "section": "scene"
+    },
+    {
+      "id": "lore_reservoir",
+      "title": "青石水库",
+      "content": "上游四十公里，库容三点二亿立方米，建成于上世纪七十年代。它是下游三百万人的调蓄屏障，也是这座城市最不愿意被人细看的地方——库容曲线属于公开数据，但真正决定出库量的调度记录，几十年从没完整公开过。",
+      "keys": ["青石", "水库", "出库"],
+      "constant": false,
+      "section": "world"
+    },
+    {
+      "id": "lore_flood98",
+      "title": "九八年那场水",
+      "content": "那一年周望川还在部队。他所在的连队在临江大堤上守了十九天，最后三天是泡在齐腰深的水里过的。左腿的伤就是从那时候来的。他很少提这件事，但每年一到梅雨季，他的腿会比天气预报先疼。",
+      "keys": ["九八", "旧伤", "抗洪"],
+      "subjects": ["c_zhou"],
+      "section": "character"
+    },
+    {
+      "id": "lore_two_station",
+      "title": "站里的两个人",
+      "content": "周望川带过十几个徒弟，留下来的一向不多——水文站太闷，数据太静，年轻人待不住。沈知遥是第一个把整套记录格式重新誊了一遍的人，也是一年之内唯一没有请假回过家的一次。两个人的日常是沉默的，但沉默里有一种谁都没说出口的默契。",
+      "keys": ["师徒", "站长", "见习"],
+      "subjects": ["c_shen", "c_zhou"],
+      "section": "character"
+    },
+    {
+      "id": "lore_digest",
+      "title": "那份平稳得过头的报表",
+      "content": "青石水库的出库流量曲线，在最近五天的暴雨里平得像一条用尺子画出来的线。真正的调度会随降雨、库容、机组负荷一起抖动；一条完全不抖的曲线，只能说明有人替它抖过了。",
+      "keys": ["出库数据", "曲线", "报表"],
+      "visibility": "secret",
+      "known_by": ["c_zhou"],
+      "section": "world"
+    },
+    {
+      "id": "lore_style",
+      "title": "文风",
+      "content": "白描，克制，不用形容词堆情绪。用具体的数字、体感与物理细节承载紧张感：雨声的密度、水漫过门槛的高度、旧伤在阴雨天的酸胀。人物不解释自己的动机，让行为与沉默说话。避免「不祥的预感」这类替读者下判断的句子。",
+      "constant": true,
+      "order": 100,
+      "section": "style"
+    }
+  ],
+
+  "threads": [
+    {
+      "id": "thr_tamper",
+      "title": "谁动了数据",
+      "question": "青石水库的出库数据为什么平得不正常",
+      "stakes": "水库若在暴雨中失控，下游三十万人的撤离窗口只有几个小时。",
+      "subjects": ["c_shen", "c_zhou"],
+      "stage": "seeded",
+      "protected_until": "climax",
+      "pressure": 0.15,
+      "cadence": 3
+    },
+    {
+      "id": "thr_trust",
+      "title": "两个人的沉默",
+      "question": "沈知遥会不会发现周望川早就知道",
+      "stakes": "她唯一信得过的人，可能一直在瞒着她。",
+      "subjects": ["c_shen", "c_zhou"],
+      "stage": "seeded",
+      "protected_until": "escalating",
+      "pressure": 0.1,
+      "cadence": 4
+    },
+    {
+      "id": "thr_evacuate",
+      "title": "疏散之争",
+      "question": "市里会不会在成灾之前提前疏散低洼区",
+      "stakes": "提前疏散是几万人的生计与一场政治风险；迟疑则可能来不及。",
+      "subjects": ["c_zhou", "c_lin", "c_office"],
+      "stage": "seeded",
+      "protected_until": "climax",
+      "pressure": 0.2,
+      "cadence": 3
+    }
+  ]
+}

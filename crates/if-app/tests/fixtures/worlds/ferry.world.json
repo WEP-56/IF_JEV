@@ -1,0 +1,120 @@
+{
+  "name": "渡口",
+  "genre": "古风 · 悬疑",
+  "summary": "江边只有一个渡口，摆渡的只有一个船夫。今夜起了雾，而对岸有人在等一个不该到的人。",
+
+  "settings": {
+    "seed": 20260927,
+    "narrative_style": "白描",
+    "narrative_pov": "third_limited",
+    "mechanic_step": "day",
+    "director_style": "均衡",
+    "mode": "sandbox"
+  },
+
+  "subjects": [
+    {
+      "id": "c_yan",
+      "kind": "character",
+      "name": "燕七",
+      "aliases": ["船夫"],
+      "profile": "在江上摆渡了十一年。话少，记性好，认得每一个坐过他船的人，也记得谁再没回来过。水位、风向、雾的厚薄，他看一眼江面就知道。",
+      "voice": "「水大了。」他只说这三个字，把船缆又收紧一扣。",
+      "tier": "foreground"
+    },
+    {
+      "id": "c_gu",
+      "kind": "character",
+      "name": "顾行",
+      "aliases": [],
+      "profile": "过路的客商，行囊很轻，身上却带着不止一把刀。他今晚必须过江，但没说为什么，也没说后面有没有人跟着。",
+      "voice": "说话客气得过分，像是心里在算别的事。",
+      "tier": "foreground"
+    }
+  ],
+
+  "propositions": [
+    {
+      "id": "p_water",
+      "key": "c_yan.water_level",
+      "text": "渡口的水位（尺）",
+      "subjects": ["c_yan"],
+      "kind": "state",
+      "value_type": { "type": "scalar", "min": 0, "max": 10, "unit": "尺" },
+      "internal": false
+    },
+    {
+      "id": "p_ferry",
+      "key": "c_yan.ferry_ready",
+      "text": "渡船是否还备着",
+      "subjects": ["c_yan"],
+      "kind": "state",
+      "value_type": { "type": "bool" },
+      "internal": false
+    },
+    {
+      "id": "p_intent",
+      "key": "c_gu.intent",
+      "text": "顾行此刻的打算",
+      "subjects": ["c_gu"],
+      "kind": "intention",
+      "value_type": { "type": "enum", "values": ["过江", "折返", "留下"] },
+      "internal": true
+    }
+  ],
+
+  "facts": [
+    { "prop": "p_water", "value": 4.5, "lock": "L0", "visibility": "public" },
+    { "prop": "p_ferry", "value": true, "lock": "L0", "visibility": "public" },
+    { "prop": "p_intent", "value": "过江", "lock": "L0", "visibility": "private" }
+  ],
+
+  "rules": [
+    {
+      "id": "rule_stop",
+      "text": "水位超过七尺时，渡船不出港",
+      "scope": [],
+      "triggers": [
+        {
+          "id": "t_stop",
+          "when": { "op": "compare", "prop": "p_water", "cmp": "gt", "value": 7 },
+          "produces": { "kind": "candidate", "text": "燕七把船缆系死在木桩上，不再接客" }
+        }
+      ],
+      "constraints": ["q.beat.violates_rule"],
+      "boundaries": ["规矩是船夫自己的，不是官府的禁令", "「不出港」指不载人，船夫自己上船不算"]
+    }
+  ],
+
+  "lore": [
+    {
+      "id": "lore_port",
+      "title": "老渡口",
+      "content": "江边唯一的一处渡口，一条石阶伸进水里。船是一条用了十一年的乌篷船，船板被脚底磨得发亮。对岸是一道芦苇荡，过了芦苇荡才有人烟。",
+      "keys": ["渡口", "船", "石阶"],
+      "constant": true,
+      "section": "world"
+    },
+    {
+      "id": "lore_fog",
+      "title": "江上的雾",
+      "content": "入夜起雾，江面白得像有人铺了一层棉。雾里声音传得比平时远，一条船走没走，全靠听桨声。",
+      "keys": ["雾", "江面"],
+      "section": "scene"
+    }
+  ],
+
+  "threads": [
+    {
+      "id": "thr_cross",
+      "title": "过不过得去江",
+      "question": "今夜顾行能不能过江",
+      "stakes": "他身后追着的人，天亮之前一定会到渡口。",
+      "subjects": ["c_yan", "c_gu"],
+      "stage": "seeded",
+      "protected_until": "climax",
+      "pressure": 0.15,
+      "cadence": 3
+    }
+  ]
+}

@@ -51,7 +51,7 @@ pub fn tool() -> ToolSpec {
             "properties": {
                 "prop": {
                     "type": "string",
-                    "description": "改变落在哪个命题上：命题键（视图里 propositions 的 key）。"
+                    "description": "改变落在哪个命题上：写命题键（视图里 facts[].key 的值）。视图里没有的键收不进来——**不要编造**，找不到对应命题就别记这一条。"
                 },
                 "value": {
                     "type": ["boolean", "number", "string"],
